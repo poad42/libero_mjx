@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.backends.flit"
+
+[project]
+name = "libero-mjx"
+version = "1.0.0"
+description = "All 130 LIBERO manipulation tasks ported to MuJoCo Warp for GPU-parallel simulation"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "poad42"}]
+keywords = ["libero", "mujoco", "warp", "gpu", "robotics", "manipulation", "benchmark"]
+
+dependencies = [
+    "jax>=0.4.28",
+    "mujoco>=3.1.0",
+    "mujoco-mjx>=3.1.0",
+    "warp-lang>=1.0",
+    "mujoco-warp>=3.1.0",
+    "flax>=0.8",
+    "ml-collections>=0.1",
+    "etils>=1.5",
+    "numpy>=1.24",
+]
+
+[project.optional-dependencies]
+render = ["mujoco-warp[render]"]
+torch = ["torch>=2.0"]
+libero = ["robosuite", "robomimic", "hydra-core", "omegaconf", "easydict"]
+dev = ["pytest>=7", "pytest-xdist"]
+
+[project.urls]
+Homepage = "https://github.com/poad42/libero-mjx"
+Repository = "https://github.com/poad42/libero-mjx"
+
+[tool.setuptools.packages.find]
+include = ["libero_mjx*"]
+
+[tool.setuptools.package-data]
+libero_mjx = ["assets/xml/*.xml"]

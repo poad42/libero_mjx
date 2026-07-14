@@ -1,0 +1,36 @@
+<mujoco model="libero_smoke_bowl_plate">
+  <include file="mjx_scene.xml"/>
+
+  <worldbody>
+    <!-- bowl: green box standing in for the pick object -->
+    <body name="bowl" pos="0.5 0 0.03">
+      <freejoint/>
+      <geom type="box" name="bowl" size="0.025 0.025 0.03" condim="3"
+       friction="1 .03 .003" rgba="0 1 0 1" contype="2" conaffinity="1" solref="0.01 1"/>
+    </body>
+
+    <!-- plate: red flat target zone -->
+    <body name="plate" pos="0.5 -0.2 0.005">
+      <geom type="box" name="plate" size="0.05 0.05 0.005" condim="3"
+       friction="1 .03 .003" rgba="1 0 0 0.5" contype="1" conaffinity="1" solref="0.01 1"/>
+    </body>
+
+    <!-- mocap target for visual reference -->
+    <body mocap="true" name="mocap_target">
+      <geom type="box" size="0.05 0.05 0.005" rgba="1 0 0 0.2" contype="0" conaffinity="0"/>
+    </body>
+  </worldbody>
+
+  <sensor>
+    <contact name="left_finger_pad_floor_found" geom1="left_finger_pad" geom2="floor" reduce="mindist" num="1" data="found"/>
+    <contact name="right_finger_pad_floor_found" geom1="right_finger_pad" geom2="floor" reduce="mindist" num="1" data="found"/>
+    <contact name="hand_capsule_floor_found" geom1="hand_capsule" geom2="floor" reduce="mindist" num="1" data="found"/>
+    <contact name="bowl_hand_found" geom1="bowl" geom2="hand_capsule" reduce="mindist" num="1" data="found"/>
+  </sensor>
+
+  <keyframe>
+    <key name="home"
+      qpos="0 0.3 0 -1.57079 0 2.0 -0.7853 0.04 0.04 0.5 0 0.03 1 0 0 0"
+      ctrl="0 0.3 0 -1.57079 0 2.0 -0.7853 0.04"/>
+  </keyframe>
+</mujoco>

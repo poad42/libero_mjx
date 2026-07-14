@@ -1,0 +1,44 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Checkpoints, results, logs (user-generated)
+checkpoints/
+results/
+*.log
+
+# Debug images
+debug_imgs/
+
+# Dev test scripts
+tests/test_eval_local.py
+tests/test_eval_patched.py
+tests/test_tex_array.py
+tests/test_texture.py
+tests/test_texture_data.py
+tests/test_texture_sample.py
+tests/test_render_tex.py
+tests/compare_render.py
+libero_mjx/render_patch.py
