@@ -20,6 +20,7 @@ import jax
 import jax.numpy as jp
 from etils import epath
 import mujoco
+import torch
 from mujoco import mjx
 
 from libero_mjx.envs.base import LiberoMjxEnv, LiberoState
@@ -235,6 +236,60 @@ class LiberoEnv(LiberoMjxEnv):
                 states = pickle.load(f)
         self._init_states = jp.array(states)
         return self._init_states
+
+    def batch_reset(self, init_states: np.ndarray, n_envs: int) -> LiberoState:
+        """Create a batched LiberoState for N envs with given init states.
+
+        Uses mjwarp.forward (not mjx.forward) to compute xpos — works with
+        nworld=N without vmap. The returned state can be stepped via
+        jax.vmap(env.step).
+        """
+        import warp as wp
+        import mujoco_warp as mjwarp
+        nq = self._mj_model.nq
+        nv = self._mj_model.nv
+
+        # Sample init states
+        qpos_np = np.array([init_states[i % len(init_states), 1:1+nq] for i in range(n_envs)], dtype=np.float32)
+        qvel_np = np.array([init_states[i % len(init_states), 1+nq:1+nq+nv] for i in range(n_envs)], dtype=np.float32)
+
+        # Create warp data with nworld=N and compute forward
+        mjd = mujoco.MjData(self._mj_model)
+        mujoco.mj_forward(self._mj_model, mjd)
+        with wp.ScopedDevice("cuda:0"):
+            mw_model = mjwarp.put_model(self._mj_model)
+            mw_data = mjwarp.put_data(self._mj_model, mjd, nworld=n_envs)
+            mw_data.qpos = wp.from_torch(torch.tensor(qpos_np, device="cuda"))
+            mw_data.qvel = wp.from_torch(torch.tensor(qvel_np, device="cuda"))
+            mjwarp.forward(mw_model, mw_data)
+            wp.synchronize()
+
+        # Read xpos/site_xpos from warp data (computed by mjwarp.forward)
+        xpos_np = mw_data.xpos.numpy()  # (nbody, n_envs, 3) or (n_envs, nbody, 3)
+        site_xpos_np = mw_data.site_xpos.numpy()
+        site_xmat_np = mw_data.site_xmat.numpy()
+
+        # Create JAX batched data via vmap make_data (no forward needed —
+        # we'll set xpos/site_xpos manually from the warp forward result)
+        qpos_jax = jp.array(qpos_np, dtype=jp.float32)
+        qvel_jax = jp.array(qvel_np, dtype=jp.float32)
+        xpos_jax = jp.array(xpos_np, dtype=jp.float32)
+        site_xpos_jax = jp.array(site_xpos_np, dtype=jp.float32)
+        site_xmat_jax = jp.array(site_xmat_np, dtype=jp.float32)
+
+        def make_state(qpos, qvel, xpos, site_xpos, site_xmat, rng):
+            d = mjx.make_data(self._mj_model, impl="warp", naconmax=self._naconmax, njmax=self._njmax)
+            d = d.replace(qpos=qpos, qvel=qvel, xpos=xpos, site_xpos=site_xpos, site_xmat=site_xmat)
+            info = {"rng": rng, "step": jp.array(0, dtype=jp.int32)}
+            obs = self._get_obs(d, info)
+            metrics = {k: jp.array(0.0) for k in self._reward_keys()}
+            metrics["success"] = jp.array(0.0, dtype=jp.float32)
+            return LiberoState(d, obs, jp.array(0.0), jp.array(0.0), metrics, info)
+
+        import jax
+        rng_keys = jax.random.split(jax.random.PRNGKey(0), n_envs)
+        state = jax.vmap(make_state)(qpos_jax, qvel_jax, xpos_jax, site_xpos_jax, site_xmat_jax, rng_keys)
+        return state
 
     def reset(self, rng: jax.Array) -> LiberoState:
         nq = self._mj_model.nq
