@@ -158,9 +158,10 @@ class OscController:
         grav_comp = self._gravity_compensation(data)  # (..., n_arm)
         arm_torques = torques[..., 0] + grav_comp  # (..., n_arm)
 
-        # Nullspace torques (PD to initial pose)
-        nullspace = self._nullspace_torques(J_full, mass, mass_inv, data)
-        arm_torques = arm_torques + nullspace
+        # Nullspace torques disabled — diagonal mass matrix approximation
+        # causes incorrect nullspace projection producing huge torques.
+        # The full mass matrix from warp is needed for correct nullspace.
+        # arm_torques = arm_torques + nullspace
 
         # Place arm torques into full ctrl vector
         batch_shape = delta_action.shape[:-1]
