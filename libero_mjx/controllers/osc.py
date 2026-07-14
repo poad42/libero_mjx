@@ -42,6 +42,7 @@ class OscController:
         output_max_ori: float = 0.5,
         rest_qpos: Optional[np.ndarray] = None,
         diag_mass: Optional[np.ndarray] = None,
+        full_mass_arm: Optional[np.ndarray] = None,
     ):
         self._site_id = jacobian_site_id
         self._site_body_id = jacobian_site_body_id
@@ -55,6 +56,7 @@ class OscController:
         self._out_min = -self._out_max
         self._rest_qpos = jp.array(rest_qpos if rest_qpos is not None else np.zeros(7))
         self._diag_mass = diag_mass if diag_mass is not None else np.ones(43)
+        self._full_mass_arm = jp.array(full_mass_arm) if full_mass_arm is not None else None
         self._model: Optional[mjx.Model] = None
 
     @classmethod
@@ -83,6 +85,13 @@ class OscController:
             ])
         # Diagonal mass from model (fallback for broken Warp sparse reconstruction)
         diag_mass = np.array(mj_model.dof_M0)
+        # Full arm mass matrix from CPU (constant for fixed-base robot)
+        mjd = mujoco.MjData(mj_model)
+        mujoco.mj_forward(mj_model, mjd)
+        M_full = np.zeros((mj_model.nv, mj_model.nv))
+        mujoco.mj_fullM(mj_model, mjd, M_full)
+        arm_dof = np.array([mj_model.jnt_dofadr[mj_model.joint(j).id] for j in arm_joints])
+        full_mass_arm = M_full[np.ix_(arm_dof, arm_dof)]
         return cls(
             jacobian_site_id=site_id,
             jacobian_site_body_id=site_body_id,
@@ -95,6 +104,7 @@ class OscController:
             output_max=output_max,
             rest_qpos=rest_qpos,
             diag_mass=diag_mass,
+            full_mass_arm=full_mass_arm,
         )
 
     def set_model(self, model: mjx.Model):
@@ -158,10 +168,9 @@ class OscController:
         grav_comp = self._gravity_compensation(data)  # (..., n_arm)
         arm_torques = torques[..., 0] + grav_comp  # (..., n_arm)
 
-        # Nullspace torques disabled — diagonal mass matrix approximation
-        # causes incorrect nullspace projection producing huge torques.
-        # The full mass matrix from warp is needed for correct nullspace.
-        # arm_torques = arm_torques + nullspace
+        # Nullspace torques (PD to initial pose)
+        nullspace = self._nullspace_torques(J_full, mass, mass_inv, data)
+        arm_torques = arm_torques + nullspace
 
         # Place arm torques into full ctrl vector
         batch_shape = delta_action.shape[:-1]
@@ -199,9 +208,16 @@ class OscController:
         return J_full, J_pos, J_ori, mass
 
     def _mass_matrix(self, data: mjx.Data) -> jax.Array:
-        """Full mass matrix. Uses diagonal approximation to avoid
-        sparse reconstruction issues on Warp/gfx1201."""
-        # Diagonal mass matrix from model dof weights
+        """Full mass matrix. Uses precomputed arm submatrix from CPU."""
+        if self._full_mass_arm is not None:
+            # Use precomputed full arm mass matrix (constant for fixed-base)
+            batch_shape = data.qpos.shape[:-1]
+            if batch_shape:
+                M = jp.tile(self._full_mass_arm, (*batch_shape, 1, 1))
+            else:
+                M = self._full_mass_arm
+            return M
+        # Fallback: diagonal mass matrix from model dof weights
         M_diag = jp.array(self._diag_mass, dtype=data.qpos.dtype)
         nv = self._model.nv
         batch_shape = data.qpos.shape[:-1]
