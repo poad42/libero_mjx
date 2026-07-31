@@ -15,6 +15,11 @@ matrix (19x19, 153 non-zeros) the densification is done on CPU: the DtoH+HtoD
 transfer (~600 bytes) costs less than 8 GPU kernel launches. The GPU-only
 path (clone + GPU scatter) works correctly but is ~7 ms slower per step.
 
+Graph capture of mjwarp.step via wp.CaptureManager was tested. Graph replay
+produces bit-exact results for the first few steps but goes NaN once contact
+counts change (the captured graph has fixed kernel launch dimensions that
+cannot adapt to dynamic constraint counts). Eager execution is used instead.
+
 Supports the spatial suite (task 0). Other suites require porting their
 predicates and obs construction.
 """
