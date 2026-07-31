@@ -54,7 +54,8 @@ print(f"CPU 5 zero: EE={ee_cpu} obj={obj_cpu}", flush=True)
 def make_state(qpos, qvel, rng):
     d = mjx.make_data(m, impl="warp", naconmax=env._naconmax, njmax=env._njmax)
     d = d.replace(qpos=qpos, qvel=qvel)
-    info = {"rng": rng, "step": jnp.array(0, dtype=jnp.int32)}
+    d = mjx.forward(env._mjx_model, d)  # populate site_xpos/xpos for OSC + obs
+    info = {"rng": rng, "step": jnp.array(0, dtype=jnp.int32), "gripper_current_action": jnp.zeros(2)}
     obs = env._get_obs(d, info)
     metrics = {k: jnp.array(0.0) for k in env._reward_keys()}
     metrics["success"] = jnp.array(0.0, dtype=jnp.float32)

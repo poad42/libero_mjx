@@ -14,7 +14,8 @@ Core modules:
   - envs: Unified LiberoEnv for all 5 suites + base class
   - controllers: OSC controller (JAX port of robosuite OSC_POSE)
   - predicates: Success predicates (distance, on, in_region, is_open, etc.)
-  - render: Batched GPU rendering via mujoco_warp with DLPack export
+  - render: Batched GPU rendering via mujoco_warp (WarpRenderer)
+  - render_kernel_patch: Patches mujoco_warp render kernel (shadow, haze)
   - warp_gpu_patch: ROCm/CUDA compatibility patches
   - robosuite_patch: Fixes for loading all 5 suites from robosuite
 
@@ -28,7 +29,8 @@ Usage:
 For BC training and evaluation, see scripts/train_bc.py and scripts/eval_bc.py.
 """
 
-# Patch Warp GPU detection + texture type code before importing anything else
+# Patch Warp GPU detection + texture type code before importing anything else.
+# These patches must run before any warp/mujoco_warp import.
 from libero_mjx.warp_gpu_patch import patch_warp_to_gpu
 patch_warp_to_gpu()
 from libero_mjx.texture_patch import patch as patch_texture  # noqa: F401

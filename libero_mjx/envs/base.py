@@ -123,26 +123,53 @@ class LiberoMjxEnv(abc.ABC):
         return data
 
     def _init_info(self, rng: jax.Array) -> Dict[str, Any]:
-        return {"rng": rng, "step": jp.array(0, dtype=int)}
+        return {
+            "rng": rng,
+            "step": jp.array(0, dtype=int),
+            "gripper_current_action": jp.zeros(2),
+        }
 
     def step(self, state: LiberoState, action: jax.Array) -> LiberoState:
         action = jp.clip(action, -1.0, 1.0)
         arm_action = action[..., :6]
         gripper_action = action[..., 6:7]
-        ctrl = self._osc.compute_torques(state.data, arm_action)
 
-        # Gripper: map [-1,1] to finger target [0.0, 0.04] (open=0.04)
-        finger_target = (gripper_action + 1.0) * 0.02
+        # Gripper: match robosuite PandaGripper.format_action (incremental, sign-based).
+        # current_action starts at [0, 0] and accumulates:
+        #   current_action += [-1, 1] * speed * sign(gripper_action)
+        # Then ctrl = bias + weight * current_action where:
+        #   bias = [0.02, -0.02], weight = [0.02, 0.02]
+        #   close (action=1): current_action -> [-1, +1] -> ctrl = [0, 0]
+        #   open  (action=-1): current_action -> [+1, -1] -> ctrl = [0.04, -0.04]
+        gripper_speed = 0.2
+        gripper_sign = jp.sign(gripper_action[..., 0])  # scalar per env
+        cur = state.info["gripper_current_action"]  # (N, 2)
+        delta_g = jp.stack([-gripper_sign, gripper_sign], axis=-1) * gripper_speed  # (N, 2)
+        cur = jp.clip(cur + delta_g, -1.0, 1.0)
+        finger_target = 0.02 * jp.stack([1.0 + cur[..., 0], cur[..., 1] - 1.0], axis=-1)
         finger_idx = self._gripper_ctrl_idx
-        ctrl = ctrl.at[..., finger_idx].set(finger_target)
+
+        # OSC control: compute desired EE goal from current pose + delta
+        osc = self._osc
+        delta = jp.clip(arm_action * osc._out_max, osc._out_min, osc._out_max)
+        ee_pos0 = state.data.site_xpos[osc._site_id]
+        ee_mat0 = state.data.site_xmat[osc._site_id]
+        desired_pos = ee_pos0 + delta[..., :3]
+        delta_rotvec = delta[..., 3:6]
+        rot_err = osc._axisangle_to_rotmat(delta_rotvec)
+        ee_mat_33 = ee_mat0.reshape(*ee_pos0.shape[:-1], 3, 3)
+        desired_mat = jp.einsum("...ij,...jk->...ik", rot_err, ee_mat_33)
 
         def single_step(data, _):
+            # Recompute OSC torques each substep tracking the FIXED goal
+            ctrl = osc.compute_torques_to_goal(data, desired_pos, desired_mat)
+            ctrl = ctrl.at[..., finger_idx].set(finger_target)
             data = data.replace(ctrl=ctrl)
             data = mjx.step(self._mjx_model, data)
             return data, None
 
         data = jax.lax.scan(single_step, state.data, (), self.n_substeps)[0]
-        info = {**state.info, "step": state.info["step"] + 1}
+        info = {**state.info, "step": state.info["step"] + 1, "gripper_current_action": cur}
         raw_rewards = self._get_reward(data, info)
         reward = jp.clip(sum(raw_rewards.values()), -1e4, 1e4)
         success = self._get_predicate()(data).astype(float)

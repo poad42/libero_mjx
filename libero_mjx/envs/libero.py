@@ -95,8 +95,8 @@ class LiberoEnv(LiberoMjxEnv):
 
         meta = SUITES[suite]
         xml_path = _XML_DIR / f"{meta['prefix']}_task{task_id}.xml"
-        naconmax = n_envs * 200
-        kwargs.setdefault("njmax", 2048)
+        naconmax = n_envs * 1024
+        kwargs.setdefault("njmax", 4096)
         super().__init__(xml_path=xml_path, impl=impl, naconmax=naconmax, **kwargs)
 
         if optimize_physics:
@@ -235,6 +235,13 @@ class LiberoEnv(LiberoMjxEnv):
             with z.open(z.namelist()[0]) as f:
                 states = pickle.load(f)
         self._init_states = jp.array(states)
+
+        # Update OSC rest_qpos to match the first init state (not the hardcoded default)
+        if hasattr(self, '_osc') and self._osc is not None:
+            first_qpos = np.array(states[0][1:1 + self._mj_model.nq], dtype=float)
+            rest_arm = np.array([first_qpos[i] for i in self._robot_arm_qposadr])
+            self._osc._rest_qpos = jp.array(rest_arm)
+
         return self._init_states
 
     def batch_reset(self, init_states: np.ndarray, n_envs: int) -> LiberoState:
@@ -280,7 +287,7 @@ class LiberoEnv(LiberoMjxEnv):
         def make_state(qpos, qvel, xpos, site_xpos, site_xmat, rng):
             d = mjx.make_data(self._mj_model, impl="warp", naconmax=self._naconmax, njmax=self._njmax)
             d = d.replace(qpos=qpos, qvel=qvel, xpos=xpos, site_xpos=site_xpos, site_xmat=site_xmat)
-            info = {"rng": rng, "step": jp.array(0, dtype=jp.int32)}
+            info = {"rng": rng, "step": jp.array(0, dtype=jp.int32), "gripper_current_action": jp.zeros(2)}
             obs = self._get_obs(d, info)
             metrics = {k: jp.array(0.0) for k in self._reward_keys()}
             metrics["success"] = jp.array(0.0, dtype=jp.float32)
@@ -290,97 +297,6 @@ class LiberoEnv(LiberoMjxEnv):
         rng_keys = jax.random.split(jax.random.PRNGKey(0), n_envs)
         state = jax.vmap(make_state)(qpos_jax, qvel_jax, xpos_jax, site_xpos_jax, site_xmat_jax, rng_keys)
         return state
-
-    def step_warp(self, mw_model, mw_data, actions: np.ndarray, n_substeps: int = 1):
-        """Step physics using pure warp parallelism (no JAX vmap).
-
-        Converts warp data to JAX via DLPack, computes OSC torques,
-        sets ctrl on warp data, and steps via mjwarp.step.
-
-        Args:
-            mw_model: mujoco_warp Model
-            mw_data: mujoco_warp Data (nworld=N)
-            actions: (N, 7) numpy array of BC actions
-            n_substeps: number of physics substeps per action
-        """
-        import warp as wp
-        import mujoco_warp as mjwarp
-        import jax
-        import jax.numpy as jp
-
-        n_envs = actions.shape[0]
-        arm_action = actions[:, :6]
-        gripper_action = actions[:, 6:7]
-
-        # Convert warp data fields to JAX via torch DLPack (zero-copy)
-        # Warp data is already (nworld, ...) — no transpose needed
-        qpos_jax = jp.from_dlpack(wp.to_torch(mw_data.qpos))  # (nworld, nq)
-        qvel_jax = jp.from_dlpack(wp.to_torch(mw_data.qvel))  # (nworld, nv)
-        site_xpos_jax = jp.from_dlpack(wp.to_torch(mw_data.site_xpos))  # (nworld, nsite, 3)
-        site_xmat_jax = jp.from_dlpack(wp.to_torch(mw_data.site_xmat))  # (nworld, nsite, 3, 3)
-        site_xmat_jax = site_xmat_jax.reshape(site_xmat_jax.shape[:-2] + (9,))  # (nworld, nsite, 9)
-        qfrc_bias_jax = jp.from_dlpack(wp.to_torch(mw_data.qfrc_bias))  # (nworld, nv)
-        xpos_jax = jp.from_dlpack(wp.to_torch(mw_data.xpos))  # (nworld, nbody, 3)
-        xmat_jax = jp.from_dlpack(wp.to_torch(mw_data.xmat))  # (nworld, nbody, 3, 3)
-        xmat_jax = xmat_jax.reshape(xmat_jax.shape[:-2] + (9,))  # (nworld, nbody, 9)
-
-        # Build a minimal mjx.Data for OSC computation
-        # The OSC controller accesses: site_xpos, site_xmat, qpos, qvel, qfrc_bias
-        # and calls mjx.jac which needs: xpos, xmat, cdof, etc.
-        # Rather than building a full Data, let's compute OSC torques
-        # using the data we have.
-
-        # Actually, the simplest approach: create a batched mjx.Data
-        # from the warp data. The key fields needed by compute_torques:
-        # - site_xpos, site_xmat (for EE pose)
-        # - qpos, qvel (for joint states)
-        # - qfrc_bias (for gravity compensation)
-        # - mjx.jac needs: model + data with xpos, xmat, cdof
-        # mjx.jac is a JAX function that works on any data with those fields
-
-        # Build minimal mjx.Data per env and compute OSC torques
-        # Use JAX impl with collisions disabled (only needs kinematics for Jacobians)
-        old_flags = self._mj_model.opt.disableflags
-        self._mj_model.opt.disableflags = old_flags | 0x4  # mjDISABLE_CONTACT
-        try:
-            mjm_jax = mjx.put_model(self._mj_model, impl="jax")
-        except NotImplementedError:
-            # If JAX still can't handle it, skip OSC and use zero ctrl
-            self._mj_model.opt.disableflags = old_flags
-            ctrl_np = np.zeros((n_envs, self._mj_model.nu), dtype=np.float32)
-            with wp.ScopedDevice("cuda:0"):
-                mw_data.ctrl = wp.array(ctrl_np, dtype=wp.float32)
-            for _ in range(n_substeps):
-                mjwarp.step(mw_model, mw_data)
-            wp.synchronize()
-            return
-        self._mj_model.opt.disableflags = old_flags
-        # Cache the JAX model for subsequent calls
-        self._mjm_jax_osc = mjm_jax
-        ctrl_list = []
-        for i in range(n_envs):
-            d = mjx.make_data(self._mj_model, impl="jax")
-            d = d.replace(qpos=qpos_jax[i], qvel=qvel_jax[i],
-                          qfrc_bias=qfrc_bias_jax[i])
-            # Forward computes xpos, xmat, cdof, site_xpos, site_xmat
-            d = mjx.forward(self._mjm_jax_osc, d)
-            ctrl_i = self._osc.compute_torques(d, arm_action[i])
-            # Add gripper
-            finger_target = (gripper_action[i] + 1.0) * 0.02
-            ctrl_i = ctrl_i.at[self._gripper_ctrl_idx].set(finger_target)
-            ctrl_list.append(ctrl_i)
-
-        ctrl_jax = jp.stack(ctrl_list)
-
-        # Convert ctrl back to warp (zero-copy)
-        ctrl_np = np.asarray(jax.block_until_ready(ctrl_jax), dtype=np.float32)
-        with wp.ScopedDevice("cuda:0"):
-            mw_data.ctrl = wp.array(ctrl_np, dtype=wp.float32)
-
-        # Step physics via mjwarp (pure warp, no vmap)
-        for _ in range(n_substeps):
-            mjwarp.step(mw_model, mw_data)
-        wp.synchronize()
 
     def reset(self, rng: jax.Array) -> LiberoState:
         nq = self._mj_model.nq

@@ -23,7 +23,8 @@ qvel_batch = jnp.array([init_states[i][1+nq:1+nq+nv] for i in range(N)], dtype=j
 def make_state(qpos, qvel, rng):
     d = mjx.make_data(env._mj_model, impl="warp", naconmax=env._naconmax, njmax=env._njmax)
     d = d.replace(qpos=qpos, qvel=qvel)
-    info = {"rng": rng, "step": jnp.array(0, dtype=jnp.int32)}
+    d = mjx.forward(env._mjx_model, d)  # populate site_xpos/xpos for OSC + obs
+    info = {"rng": rng, "step": jnp.array(0, dtype=jnp.int32), "gripper_current_action": jnp.zeros(2)}
     obs = env._get_obs(d, info)
     metrics = {k: jnp.array(0.0) for k in env._reward_keys()}
     metrics["success"] = jnp.array(0.0, dtype=jnp.float32)

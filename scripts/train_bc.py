@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
-"""Train a BC transformer policy on any LIBERO suite.
+"""Train a BC transformer policy on any LIBERO suite with domain randomization.
 
 Training only needs demo data (HDF5) + torch. No robosuite, no Warp, no eval.
-Eval is done separately via eval_bc.py (robosuite) or train_and_eval.py (warp).
+Eval is done separately via eval_bc.py (robosuite) or eval_warp_only.py (Warp).
+
+Domain randomization: brightness/contrast/noise/blur on images + optional
+state noise on low-dim obs. Designed to bridge CPU→Warp sim-to-real gap.
 
 Usage:
     python scripts/train_bc.py --suite spatial --task-id 0 --epochs 50 \
-        --batch-size 32 --save checkpoints/spatial_task0.pth
+        --batch-size 32 --save checkpoints/spatial_task0.pth --augment
 """
 import sys, os, time, argparse
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
@@ -14,6 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import DataLoader, RandomSampler
 
 SUITE_TO_BENCHMARK = {
@@ -23,6 +27,63 @@ SUITE_TO_BENCHMARK = {
     "scene10": "LIBERO_10",
     "scene90": "LIBERO_90",
 }
+
+
+def augment_images(img_batch, strength=1.0):
+    """Apply domain randomization to image batch.
+
+    Args:
+        img_batch: (B, T, H, W, C) uint8 tensor on GPU (channels-last)
+        strength: overall augmentation strength multiplier (0=none, 1=moderate, 2=heavy)
+
+    Augmentations:
+        - Brightness: ±20% * strength
+        - Contrast: ±15% * strength
+        - Gaussian noise: std=5 * strength
+        - Channel jitter: per-channel offset ±10 * strength
+        - Gaussian blur: kernel=3, prob=0.1 * strength
+    """
+    if strength <= 0:
+        return img_batch
+
+    orig_dtype = img_batch.dtype
+    img = img_batch.float()  # (B, T, H, W, C)
+
+    # Brightness: multiply by random factor per sample
+    b_factor = torch.empty(img.shape[0], 1, 1, 1, 1, device=img.device).uniform_(
+        1.0 - 0.2 * strength, 1.0 + 0.2 * strength
+    )
+    img = img * b_factor
+
+    # Contrast: scale around per-image mean
+    dims = (1, 2, 3, 4)  # T, H, W, C
+    mean = img.mean(dim=dims, keepdim=True)
+    c_factor = torch.empty(img.shape[0], 1, 1, 1, 1, device=img.device).uniform_(
+        1.0 - 0.15 * strength, 1.0 + 0.15 * strength
+    )
+    img = (img - mean) * c_factor + mean
+
+    # Gaussian noise
+    noise_std = 5.0 * strength
+    img = img + torch.randn_like(img) * noise_std
+
+    # Channel jitter (per-channel brightness offset)
+    c_offset = torch.empty(1, 1, 1, 1, img.shape[-1], device=img.device).uniform_(
+        -10 * strength, 10 * strength
+    )
+    img = img + c_offset
+
+    # Gaussian blur (probabilistic, per-sample)
+    if np.random.random() < 0.1 * strength:
+        k = 3
+        B, T, H, W, C = img.shape
+        # avg_pool2d needs (N, C, H, W) — reshape
+        img = img.permute(0, 1, 4, 2, 3).contiguous()  # (B, T, C, H, W)
+        img = img.view(B * T, C, H, W)
+        img = F.avg_pool2d(img, kernel_size=k, stride=1, padding=k // 2)
+        img = img.view(B, T, C, H, W).permute(0, 1, 3, 4, 2).contiguous()  # back to (B, T, H, W, C)
+
+    return img.clamp(0, 255).to(orig_dtype)
 
 
 def main():
@@ -35,6 +96,8 @@ def main():
     p.add_argument("--save", type=str, required=True)
     p.add_argument("--device", default="auto")
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--augment", action="store_true", help="Enable domain randomization augmentation")
+    p.add_argument("--aug-strength", type=float, default=1.0, help="Augmentation strength (0=none, 1=moderate, 2=heavy)")
     args = p.parse_args()
 
     device = "cuda" if args.device == "auto" and torch.cuda.is_available() else args.device
@@ -110,6 +173,8 @@ def main():
     print(f"[train] suite={args.suite} task={args.task_id} epochs={args.epochs} batch={args.batch_size}")
     print(f"[train] demo: {demo_path}")
     print(f"[train] samples={len(task_dataset)} batches={len(train_loader)} device={device}")
+    if args.augment:
+        print(f"[train] augmentation: ON (strength={args.aug_strength})")
 
     best_loss = float("inf")
     os.makedirs(os.path.dirname(args.save) or ".", exist_ok=True)
@@ -122,6 +187,12 @@ def main():
 
         for batch in train_loader:
             data = algo.map_tensor_to_device(batch)
+
+            # Domain randomization augmentation
+            if args.augment:
+                for key in ("agentview_rgb", "eye_in_hand_rgb"):
+                    if key in data.get("obs", {}):
+                        data["obs"][key] = augment_images(data["obs"][key], strength=args.aug_strength)
             loss = algo.policy.compute_loss(data)
             optimizer.zero_grad()
             loss.backward()

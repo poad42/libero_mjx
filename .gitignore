@@ -31,14 +31,29 @@ results/
 
 # Debug images
 debug_imgs/
+tests/*.png
 
-# Dev test scripts
-tests/test_eval_local.py
-tests/test_eval_patched.py
-tests/test_tex_array.py
-tests/test_texture.py
-tests/test_texture_data.py
-tests/test_texture_sample.py
-tests/test_render_tex.py
-tests/compare_render.py
-libero_mjx/render_patch.py
+# Debug model dumps
+rs_model.xml
+wp_model.xml
+
+# GPU crash dumps
+gpucore.*.gpu
+
+# HuggingFace model cache
+bert/
+
+# Pi (pi.dev) runtime state — not part of the library
+.pi/
+SYSTEM.md
+
+# π-Harness runtime artifacts (state, transcripts, memory db, run metrics)
+harness/runs/
+*.sqlite
+*.sqlite-journal
+
+# Pi (pi.dev) runtime state — sessions, auth, git-cloned packages.
+# Keep .pi/extensions, .pi/skills, .pi/agents, .pi/settings.json (source).
+.pi/sessions/
+# Isolated Node env for Pi (installed at ~/.pi-env, but ignore any local copy)
+.pi-env/

@@ -43,6 +43,7 @@ class OscController:
         rest_qpos: Optional[np.ndarray] = None,
         diag_mass: Optional[np.ndarray] = None,
         full_mass_arm: Optional[np.ndarray] = None,
+        model_meta: Optional[dict] = None,
     ):
         self._site_id = jacobian_site_id
         self._site_body_id = jacobian_site_body_id
@@ -58,13 +59,18 @@ class OscController:
         self._diag_mass = diag_mass if diag_mass is not None else np.ones(43)
         self._full_mass_arm = jp.array(full_mass_arm) if full_mass_arm is not None else None
         self._model: Optional[mjx.Model] = None
+        self._model_meta = model_meta
+        # CPU model/data for accurate mass matrix and qfrc_bias computation
+        self._mj_model_cpu = None
+        self._mjd = None
+        self._cached_qfrc_bias = None
 
     @classmethod
     def from_model(
         cls,
         mj_model: mujoco.MjModel,
         site_name: str = "gripper",
-        arm_joint_prefix: str = "joint",
+        arm_joint_prefix: str = "robot0_joint",
         kp: float = 150.0,
         damping_ratio: float = 1.0,
         output_max: float = 0.05,
@@ -92,7 +98,18 @@ class OscController:
         mujoco.mj_fullM(mj_model, mjd, M_full)
         arm_dof = np.array([mj_model.jnt_dofadr[mj_model.joint(j).id] for j in arm_joints])
         full_mass_arm = M_full[np.ix_(arm_dof, arm_dof)]
-        return cls(
+        # Store sparse mass matrix structure for state-dependent densification
+        rownnz = np.array(mj_model.M_rownnz)
+        rowadr = np.array(mj_model.M_rowadr)
+        colind = np.array(mj_model.M_colind)
+        nv = mj_model.nv
+        all_rows = np.repeat(np.arange(nv), rownnz)
+        model_meta = {
+            "nv": nv,
+            "all_rows": all_rows,
+            "all_cols": colind,
+        }
+        instance = cls(
             jacobian_site_id=site_id,
             jacobian_site_body_id=site_body_id,
             joint_qposadr=qposadr,
@@ -105,7 +122,12 @@ class OscController:
             rest_qpos=rest_qpos,
             diag_mass=diag_mass,
             full_mass_arm=full_mass_arm,
+            model_meta=model_meta,
         )
+        # Store CPU model/data for accurate mass matrix and qfrc_bias
+        instance._mj_model_cpu = mj_model
+        instance._mjd = mujoco.MjData(mj_model)
+        return instance
 
     def set_model(self, model: mjx.Model):
         self._model = model
@@ -125,18 +147,34 @@ class OscController:
         ee_pos = data.site_xpos[self._site_id]  # (..., 3)
         ee_mat = data.site_xmat[self._site_id]  # (..., 9) flattened
 
-        # Desired pose = current + delta
+        # Desired pose = current + delta (goal updates from achieved position)
         desired_pos = ee_pos + delta[..., :3]
         delta_rotvec = delta[..., 3:6]
-        rot_err = self._axisangle_to_rotmat(delta_rotvec)  # (..., 3, 3)
+        rot_err = self._axisangle_to_rotmat(delta_rotvec)
         ee_mat_33 = ee_mat.reshape(*ee_pos.shape[:-1], 3, 3)
         desired_mat = jp.einsum("...ij,...jk->...ik", rot_err, ee_mat_33)
+        return self.compute_torques_to_goal(data, desired_pos, desired_mat)
+
+    def compute_torques_to_goal(self, data: mjx.Data, desired_pos: jax.Array, desired_mat: jax.Array) -> jax.Array:
+        """Compute arm torques tracking a fixed goal pose (called per substep).
+
+        Args:
+          data: MJX Data (current state at this substep).
+          desired_pos: (..., 3) fixed goal position in world frame.
+          desired_mat: (..., 3, 3) fixed goal orientation matrix.
+        Returns:
+          [..., nu] full ctrl vector with zeros for non-arm actuators.
+        """
+        # Current EE pose (updated each substep)
+        ee_pos = data.site_xpos[self._site_id]  # (..., 3)
+        ee_mat = data.site_xmat[self._site_id]  # (..., 9) flattened
+        ee_mat_33 = ee_mat.reshape(*ee_pos.shape[:-1], 3, 3)
 
         # Position/orientation error
         pos_err = desired_pos - ee_pos  # (..., 3)
         ori_err = self._orientation_error(desired_mat, ee_mat_33)  # (..., 3)
 
-        # Velocity error (zero base velocity assumption for tabletop)
+        # Velocity error
         ee_vel = self._get_site_vel(data)  # (..., 6)
         vel_pos_err = -ee_vel[..., :3]
         vel_ori_err = -ee_vel[..., 3:6]
@@ -147,33 +185,31 @@ class OscController:
 
         # Jacobians and mass matrix
         J_full, J_pos, J_ori, mass = self._get_jacobians_mass(data)
-        # J_pos: (..., 3, n_arm), J_ori: (..., 3, n_arm), J_full: (..., 6, n_arm)
-        # mass: (..., n_arm, n_arm)
         mass_inv = jp.linalg.inv(mass)  # (..., n_arm, n_arm)
 
         # Lambda matrices (uncoupled)
-        lambda_pos_inv = J_pos @ mass_inv @ jp.swapaxes(J_pos, -1, -2)  # (..., 3, 3)
-        lambda_ori_inv = J_ori @ mass_inv @ jp.swapaxes(J_ori, -1, -2)  # (..., 3, 3)
-        lambda_pos = self._pinv(lambda_pos_inv)  # (..., 3, 3)
-        lambda_ori = self._pinv(lambda_ori_inv)  # (..., 3, 3)
+        lambda_pos_inv = J_pos @ mass_inv @ jp.swapaxes(J_pos, -1, -2)
+        lambda_ori_inv = J_ori @ mass_inv @ jp.swapaxes(J_ori, -1, -2)
+        lambda_pos = self._pinv(lambda_pos_inv)
+        lambda_ori = self._pinv(lambda_ori_inv)
 
         # Decoupled force/torque: Lambda @ F
-        decoupled_force = lambda_pos @ desired_force[..., :, None]  # (..., 3, 1)
-        decoupled_torque = lambda_ori @ desired_torque[..., :, None]  # (..., 3, 1)
-        wrench = jp.concatenate([decoupled_force, decoupled_torque], axis=-2)  # (..., 6, 1)
-        wrench = wrench[..., 0]  # (..., 6)
+        decoupled_force = lambda_pos @ desired_force[..., :, None]
+        decoupled_torque = lambda_ori @ desired_torque[..., :, None]
+        wrench = jp.concatenate([decoupled_force, decoupled_torque], axis=-2)
+        wrench = wrench[..., 0]
 
         # tau = J^T * wrench + gravity comp
-        torques = jp.swapaxes(J_full, -1, -2) @ wrench[..., :, None]  # (..., n_arm, 1)
-        grav_comp = self._gravity_compensation(data)  # (..., n_arm)
-        arm_torques = torques[..., 0] + grav_comp  # (..., n_arm)
+        torques = jp.swapaxes(J_full, -1, -2) @ wrench[..., :, None]
+        grav_comp = self._gravity_compensation(data)
+        arm_torques = torques[..., 0] + grav_comp
 
         # Nullspace torques (PD to initial pose)
         nullspace = self._nullspace_torques(J_full, mass, mass_inv, data)
         arm_torques = arm_torques + nullspace
 
         # Place arm torques into full ctrl vector
-        batch_shape = delta_action.shape[:-1]
+        batch_shape = data.qpos.shape[:-1]
         ctrl = jp.zeros((*batch_shape, self._nu))
         ctrl = ctrl.at[..., self._arm_act_idx].set(arm_torques)
         return ctrl
@@ -208,26 +244,34 @@ class OscController:
         return J_full, J_pos, J_ori, mass
 
     def _mass_matrix(self, data: mjx.Data) -> jax.Array:
-        """Full mass matrix. Uses precomputed arm submatrix from CPU."""
-        if self._full_mass_arm is not None:
-            # Use precomputed full arm mass matrix (constant for fixed-base)
+        """State-dependent mass matrix from mjx.full_m (computed each substep)."""
+        M = mjx.full_m(self._model, data)
+        # mjx.full_m returns (nworld, nM) sparse for warp impl
+        if M.ndim == 2 and M.shape[-1] != self._model.nv:
+            # Sparse: densify
             batch_shape = data.qpos.shape[:-1]
-            if batch_shape:
-                M = jp.tile(self._full_mass_arm, (*batch_shape, 1, 1))
+            if len(batch_shape) == 0 and M.shape[0] == 1:
+                M = self._densify_mass(M[0])
             else:
-                M = self._full_mass_arm
-            return M
-        # Fallback: diagonal mass matrix from model dof weights
-        M_diag = jp.array(self._diag_mass, dtype=data.qpos.dtype)
-        nv = self._model.nv
-        batch_shape = data.qpos.shape[:-1]
-        if batch_shape:
-            M = jp.tile(jp.diag(M_diag), (*batch_shape, 1, 1))
-        else:
-            M = jp.diag(M_diag)
+                M = self._densify_mass(M)
         return M
 
+    def _densify_mass(self, qM_sparse: jax.Array) -> jax.Array:
+        """Convert sparse qM (batch, nM) to dense (batch, nv, nv)."""
+        meta = self._model_meta
+        nv = meta["nv"]
+        all_rows = meta["all_rows"]
+        all_cols = meta["all_cols"]
+
+        batch_shape = qM_sparse.shape[:-1]
+        mat = jp.zeros((*batch_shape, nv, nv))
+        mat = mat.at[..., all_rows, all_cols].set(qM_sparse)
+        # Symmetrize: copy lower triangle to upper
+        mat = mat + jp.swapaxes(jp.tril(mat, -1), -1, -2)
+        return mat
+
     def _gravity_compensation(self, data: mjx.Data) -> jax.Array:
+        # Warp qfrc_bias is accurate (verified: diff < 1e-5 vs CPU)
         qfrc_bias = data.qfrc_bias
         arm_dof = self._dofadr
         return qfrc_bias[..., arm_dof]
