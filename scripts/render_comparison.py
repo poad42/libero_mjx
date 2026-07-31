@@ -30,19 +30,44 @@ patch_robosuite()
 SUITE = "spatial"
 TASK_ID = 0
 N_ENVS = 1
-IMG_H = 128
-IMG_W = 128
+IMG_H = 256
+IMG_W = 256
 OUT_DIR = os.path.join(os.path.dirname(__file__), "..", "docs", "images")
 
 
-def render_cpu():
+def get_init_states():
+    import torch as torch_mod
+    from libero.libero import get_libero_path
+    from libero.libero.benchmark import get_benchmark
     from hydra import initialize_config_dir, compose
+
+    benchmark_name = {
+        "spatial": "libero_spatial", "object": "libero_object",
+        "goal": "libero_goal", "scene10": "libero_10", "scene90": "libero_90",
+    }[SUITE]
+    config_dir = os.path.join(os.environ.get("LIBERO_BASIL_PATH", "/workspace/libero_basil"),
+                            "libero/configs")
+    with initialize_config_dir(version_base=None, config_dir=config_dir):
+        cfg = compose(config_name="config", overrides=[
+            "seed=0", f"benchmark_name={benchmark_name}",
+            "policy=bc_transformer_policy", "lifelong=single_task",
+            f"data.task_order_index={TASK_ID}",
+        ])
+    cfg.init_states_folder = cfg.init_states_folder or get_libero_path("init_states")
+    benchmark = get_benchmark(benchmark_name)(TASK_ID)
+    task = benchmark.get_task(TASK_ID)
+    init_states_path = os.path.join(cfg.init_states_folder, task.problem_folder, task.init_states_file)
+    init_states = torch_mod.load(init_states_path, weights_only=False)
+    return init_states
+
+
+def render_cpu():
     from omegaconf import OmegaConf
     from libero.libero import get_libero_path
     from libero.libero.benchmark import get_benchmark
     from libero.libero.envs import OffScreenRenderEnv, DummyVectorEnv
+    from hydra import initialize_config_dir, compose
 
-    repo_root = os.path.join(os.path.dirname(__file__), "..")
     config_dir = os.path.join(os.environ.get("LIBERO_BASIL_PATH", "/workspace/libero_basil"),
                             "libero/configs")
     benchmark_name = {
@@ -64,14 +89,12 @@ def render_cpu():
                 f"data.task_order_index={TASK_ID}",
             ],
         )
-    cfg.folder = cfg.folder or get_libero_path("datasets")
     cfg.bddl_folder = cfg.bddl_folder or get_libero_path("bddl_files")
     cfg.init_states_folder = cfg.init_states_folder or get_libero_path("init_states")
 
     benchmark = get_benchmark(benchmark_name)(cfg.data.task_order_index)
     task = benchmark.get_task(TASK_ID)
-    init_states_path = os.path.join(cfg.init_states_folder, task.problem_folder, task.init_states_file)
-    init_states = __import__("torch").load(init_states_path, weights_only=False)
+    init_states = get_init_states()
 
     env_args = {
         "bddl_file_name": os.path.join(cfg.bddl_folder, task.problem_folder, task.bddl_file),
@@ -81,14 +104,12 @@ def render_cpu():
     env = DummyVectorEnv([lambda: OffScreenRenderEnv(**env_args)])
     env.reset()
     env.seed(0)
-    obs = env.set_init_state(init_states[0:1])
-    dummy = np.zeros((1, 7))
-    for _ in range(5):
-        obs, _, _, _ = env.step(dummy)
+    env.set_init_state(init_states[0:1])
 
-    o = obs[0]
-    av = o["agentview_image"].copy()
-    eye = o["robot0_eye_in_hand_image"].copy()
+    sim = env.workers[0].env.env.sim
+    sim.forward()
+    av = sim.render(camera_name="agentview", height=IMG_H, width=IMG_W).copy()
+    eye = sim.render(camera_name="robot0_eye_in_hand", height=IMG_H, width=IMG_W).copy()
     env.close()
     return av, eye
 
@@ -97,24 +118,7 @@ def render_warp():
     env = LiberoEnv(suite=SUITE, task_id=TASK_ID, impl="warp", n_envs=N_ENVS, optimize_physics=False)
     env.load_init_states(TASK_ID)
 
-    import torch as torch_mod
-    from libero.libero import get_libero_path
-    from libero.libero.benchmark import get_benchmark
-    from hydra import initialize_config_dir, compose
-
-    benchmark_name = {
-        "spatial": "libero_spatial", "object": "libero_object",
-        "goal": "libero_goal", "scene10": "libero_10", "scene90": "libero_90",
-    }[SUITE]
-    config_dir = os.path.join(os.environ.get("LIBERO_BASIL_PATH", "/workspace/libero_basil"),
-                            "libero/configs")
-    with initialize_config_dir(version_base=None, config_dir=config_dir):
-        cfg = compose(config_name="config", overrides=["seed=0", f"benchmark_name={benchmark_name}", "policy=bc_transformer_policy", "lifelong=single_task", f"data.task_order_index={TASK_ID}"])
-    cfg.init_states_folder = cfg.init_states_folder or get_libero_path("init_states")
-    benchmark = get_benchmark(benchmark_name)(TASK_ID)
-    task = benchmark.get_task(TASK_ID)
-    init_states_path = os.path.join(cfg.init_states_folder, task.problem_folder, task.init_states_file)
-    init_states = torch_mod.load(init_states_path, weights_only=False)
+    init_states = get_init_states()
 
     m = env._mj_model
     nq, nv = m.nq, m.nv
@@ -140,8 +144,8 @@ def render_warp():
 
 def side_by_side(left, right, labels=("CPU (EGL)", "Warp (ray trace)"), title=""):
     h, w = left.shape[:2]
-    pad = 4
-    label_h = 16
+    pad = 8
+    label_h = 24
     total_w = w * 2 + pad * 3
     total_h = h + label_h * 2 + pad
     canvas = np.ones((total_h, total_w, 3), dtype=np.uint8) * 255
@@ -155,9 +159,9 @@ def side_by_side(left, right, labels=("CPU (EGL)", "Warp (ray trace)"), title=""
     draw = ImageDraw.Draw(pil)
     for i, label in enumerate(labels):
         x = pad + i * (w + pad)
-        draw.text((x + 2, 2), label, fill=0)
+        draw.text((x + 4, 4), label, fill=0)
     if title:
-        draw.text((pad, total_h - label_h + 2), title, fill=0)
+        draw.text((pad + 4, total_h - label_h + 4), title, fill=0)
     return np.array(pil)
 
 
