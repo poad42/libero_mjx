@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Extract MJCF XMLs for all LIBERO suites from robosuite.
 
+Task XMLs are derived from LIBERO (MIT License, Copyright (c) 2023 Lifelong
+Robot Learning). They contain scene structure only; all 3D meshes and textures
+remain in the LIBERO/robosuite packages and are referenced by path.
+
 LIBERO has 5 suites:
   - libero_spatial: 10 tasks, pick bowl → plate (same objects, different positions)
   - libero_object: 10 tasks, pick food item → basket (same scene, different objects)

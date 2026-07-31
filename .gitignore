@@ -38,6 +38,18 @@ wp_model.xml
 # GPU crash dumps
 gpucore.*.gpu
 
+# LIBERO datasets (CC BY 4.0, downloaded from HuggingFace — not redistributed)
+libero_data/
+*.hdf5
+*.h5
+
+# 3D model / texture assets (remain in LIBERO/robosuite packages)
+*.stl
+*.obj
+*.mtl
+*.dae
+*.glb
+
 # HuggingFace model cache
 bert/
 

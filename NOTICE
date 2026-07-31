@@ -1,0 +1,41 @@
+NOTICE
+======
+
+libero-mjx
+Copyright (c) 2026 Adhitya Mohan
+
+This product includes software and task definitions derived from:
+
+  LIBERO — Lifelong Robot Learning
+  Copyright (c) 2023 Lifelong Robot Learning
+  https://github.com/Lifelong-Robot-Learning/LIBERO
+  Licensed under MIT (code), CC BY 4.0 (datasets)
+
+  robosuite — A Modular Simulation Framework and Benchmark for Robot Learning
+  Copyright (c) 2022 Stanford Vision and Learning Lab and
+  UT Robot Perception and Learning Lab
+  https://github.com/ARISE-Initiative/robosuite
+  Licensed under MIT
+
+  MuJoCo / MuJoCo Warp
+  Copyright Google DeepMind
+  https://github.com/google-deepmind/mujoco
+  Licensed under Apache License, Version 2.0
+
+  robomimic — A Modular Framework for Robot Learning from Demonstration
+  Copyright (c) ARISE Initiative
+  https://github.com/ARISE-Initiative/robomimic
+  Licensed under MIT
+
+Asset Attribution
+-----------------
+
+3D object models, textures, and robot meshes are NOT redistributed
+in this repository. They remain in their respective upstream packages
+(LIBERO, robosuite) and are referenced by absolute file path at
+runtime. The 131 task XML files contain only scene structure and
+object placement metadata.
+
+Demonstration datasets are licensed by LIBERO under
+Creative Commons Attribution 4.0 International (CC BY 4.0)
+and are downloaded from the LIBERO HuggingFace hub.

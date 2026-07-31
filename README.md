@@ -285,7 +285,24 @@ Patches three files in the installed `mujoco_warp` package on disk: `render.py`,
 - [docs/physics.md](docs/physics.md): Warp physics verification & known differences
 - [docs/api.md](docs/api.md): public API reference for `LiberoEnv`, `WarpRenderer`, and `OscController`
 
+## Attribution & Third-Party Licenses
+
+This project builds on several open-source projects. See [LICENSE](LICENSE) for the full third-party license texts.
+
+| Project | License | Use |
+|---------|---------|-----|
+| [LIBERO](https://github.com/Lifelong-Robot-Learning/LIBERO) | MIT (code), [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) (datasets) | Task definitions, 131 task XMLs, demonstration datasets, benchmark structure |
+| [robosuite](https://github.com/ARISE-Initiative/robosuite) | MIT | OSC controller (port of `OSC_POSE`), robot models (Panda), scene assets |
+| [MuJoCo](https://github.com/google-deepmind/mujoco) / [MuJoCo Warp](https://github.com/google-deepmind/mujoco_warp) | Apache 2.0 | GPU-parallel physics simulation |
+| [robomimic](https://github.com/ARISE-Initiative/robomimic) | MIT | BC transformer policy architecture |
+
+**No binary assets are redistributed.** The 131 task XML files in `libero_mjx/assets/xml/` are derived from LIBERO's robosuite task definitions but contain only scene structure (object placement, robot config, contact parameters). All 3D meshes, textures, and robot models are referenced by absolute path from the LIBERO and robosuite packages at runtime and are not copied into this repository.
+
+**Demonstration datasets** used for BC training are downloaded from LIBERO's HuggingFace hub and are licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
+
 ## Citation
+
+If you use this work, please cite the original LIBERO paper and MuJoCo Warp:
 
 ```bibtex
 @inproceedings{wang2024libero,
@@ -303,4 +320,4 @@ Patches three files in the installed `mujoco_warp` package on disk: `render.py`,
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE) for the full text including third-party attributions.
