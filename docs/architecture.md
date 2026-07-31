@@ -70,11 +70,26 @@ Spatial task 0, 50-epoch BC checkpoint, 10 episodes, 600 max steps:
 | Path | Envs | Wall time | Env-steps/s | Success |
 |------|------|-----------|-------------|---------|
 | CPU (robosuite, EGL) | 1 | 92.6s | 38.4 | 50% |
-| Warp, 25 substeps | 10 | 317.2s | 18.9 | 50% |
-| Warp, 5 substeps | 10 | 146.6s | 40.9 | 70% |
-| Warp, 5 substeps, seed 999 | 10 | 129.0s | 46.5 | 70% |
+| Warp (JAX), 25 substeps | 10 | 317.2s | 18.9 | 50% |
+| Warp (JAX), 5 substeps | 10 | 146.6s | 40.9 | 70% |
+| Warp native (no JAX), 5 substeps | 10 | 116.1s | 51.7 | 60% avg |
 
-The 25-substep Warp eval is slower than CPU (0.5x throughput). The JAX physics step (25 substeps of OSC + mjx.step) takes 406 ms per control step, while the CPU eval runs robosuite on CPU and the policy on GPU in parallel. With 5 substeps (sim_dt=0.01), Warp matches CPU throughput and the success rate rises from 50% to 70%. The coarser timestep makes the robot more responsive to the policy's commands.
+The JAX-based Warp eval (25 substeps) is 0.5x CPU throughput. The JAX physics step (25 substeps of OSC + mjx.step) takes 406 ms per control step, while the CPU eval runs robosuite on CPU and the policy on GPU in parallel.
+
+The Warp native env (libero_mjx/warp_env.py) eliminates JAX from the physics step. The OSC controller runs in Torch, the physics in mujoco_warp.step(), and the mass matrix is densified from the Warp M field via CPU. With 5 substeps, the Warp native achieves 51.7 env-steps/s (1.35x CPU) with 60% average success across 3 seeds (60%, 50%, 70%).
+
+Per-phase profiling (10 envs, 5 substeps, sim_dt=0.01):
+
+| Phase | JAX-based | Warp native |
+|-------|-----------|-------------|
+| render | 94.0 ms | 65.6 ms |
+| obs (DLPack) | 0.3 ms | 0.3 ms |
+| policy | 7.8 ms | 7.3 ms |
+| step (physics + OSC) | 141.2 ms | 84.1 ms |
+| **total** | **277.3 ms** | **213.9 ms** |
+| **env-steps/s** | **36.1** | **46.7** |
+
+The Warp native step time is 40% faster (84.1 ms vs 141.2 ms) by eliminating JAX kernel launch overhead. The OSC controller runs as Torch eager operations on small matrices (7x7, 3x3, 6x6), and the physics runs as direct mujoco_warp.step() calls. No JAX JIT, no XLA dispatch, no jax.vmap overhead.
 
 ### Scaling with batch size
 
@@ -88,12 +103,14 @@ The 16 GiB GPU runs out of memory at 100 envs with 2 cameras at 128x128. The ren
 
 ### What limits throughput
 
-The bottleneck is not rendering (75 ms) or the policy (7 ms). It is the JAX physics step: 406 ms with 25 substeps, 141 ms with 5 substeps. Each substep launches dozens of small JAX kernels (Jacobian, mass matrix densification, matrix inverse, nullspace projection, mjx.step). With 10 envs, each kernel processes 10 elements and the GPU is underutilized.
+The bottleneck is the physics step: 406 ms with 25 substeps (JAX), 84 ms with 5 substeps (Warp native). Each substep runs the OSC controller (Jacobians, mass matrix, matrix inverse, nullspace projection) plus one mjwarp.step() call. With 10 envs, each kernel processes 10 elements and the GPU is underutilized.
 
-Three approaches would help:
-1. **Run physics in Warp directly**: call `mjwarp.step()` instead of `jax.vmap(jax.jit(env.step))`. This eliminates JAX kernel launches. Requires porting the OSC controller to Warp or Torch.
-2. **Increase batch size**: more envs amortizes the per-step overhead. 50 envs gives 66.4 env-steps/s (1.7x CPU). 100 envs OOMs on 16 GiB.
-3. **Reduce substeps**: sim_dt=0.01 gives 5 substeps instead of 25. 2.9x faster step time, 40% higher success rate. The physics is less accurate but the policy tolerates it.
+The Warp native env (libero_mjx/warp_env.py) addresses this by porting the OSC controller from JAX to Torch and running physics via direct mujoco_warp.step() calls. This eliminates JAX JIT compilation, XLA dispatch, and jax.vmap overhead. The step time drops from 141 ms (JAX, 5 substeps) to 84 ms (Warp native, 5 substeps), a 40% improvement.
+
+Further improvements:
+1. **Increase batch size**: more envs amortizes per-step overhead. 50 envs gives 66.4 env-steps/s (1.7x CPU). 100 envs OOMs on 16 GiB.
+2. **Reduce substeps**: sim_dt=0.01 gives 5 substeps instead of 25. The physics is less accurate but the policy tolerates it, and success rises from 50% to 60-70%.
+3. **GPU-side mass matrix densification**: the M field is read-only via DLPack on ROCm, forcing a CPU round-trip for densification. A GPU-native densification (e.g. via a Warp kernel) would eliminate the 0.5 ms per control step CPU overhead.
 
 ### Memory layout
 

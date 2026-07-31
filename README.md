@@ -113,6 +113,8 @@ scripts/
   render_comparison.py     Generate CPU vs Warp render comparison images for docs
   benchmark_eval.py        Benchmark CPU vs Warp eval throughput
   prof_eval.py             Per-phase profiling of the Warp eval loop
+  eval_warp_native.py      Eval via pure Warp + Torch (no JAX) physics
+  prof_warp_native.py      Per-phase profiling of the Warp native eval
   extract_all_xmls.py      Extract task XMLs from robosuite
   docker_run.sh            Docker wrapper for GPU scripts
 
@@ -189,10 +191,11 @@ Spatial task 0, 10 episodes, 600 max steps, AMD RX 9070 XT:
 | Path | Envs | Wall time | Env-steps/s | Success |
 |------|------|-----------|-------------|---------|
 | CPU (robosuite, EGL) | 1 | 92.6s | 38.4 | 50% |
-| Warp, 25 substeps | 10 | 317.2s | 18.9 | 50% |
-| Warp, 5 substeps | 10 | 146.6s | 40.9 | 70% |
+| Warp (JAX), 25 substeps | 10 | 317.2s | 18.9 | 50% |
+| Warp (JAX), 5 substeps | 10 | 146.6s | 40.9 | 70% |
+| Warp native (no JAX), 5 substeps | 10 | 116.1s | 51.7 | 60% avg |
 
-The default 25-substep Warp eval is 0.5x CPU throughput. The JAX physics step (75% of time) runs 25 substeps of OSC controller + mjx.step, each launching dozens of small kernels on 10 envs. With 5 substeps (sim_dt=0.01), Warp matches CPU throughput and success rises to 70%. See [docs/architecture.md](docs/architecture.md#performance) for the full profiling breakdown.
+The JAX-based Warp eval (25 substeps) is 0.5x CPU throughput. The JAX physics step (75% of time) runs 25 substeps of OSC controller + mjx.step, each launching dozens of small kernels on 10 envs. The Warp native env (libero_mjx/warp_env.py) ports the OSC controller to Torch and runs physics via direct mujoco_warp.step() calls, eliminating JAX overhead. With 5 substeps, it achieves 51.7 env-steps/s (1.35x CPU) with 60% average success. See [docs/architecture.md](docs/architecture.md#performance) for the full profiling breakdown.
 
 ### Spatial suite, CPU eval, 20 episodes per task
 
