@@ -9,10 +9,11 @@ The physics runs via mujoco_warp.step(). Jacobians come from mujoco_warp.jac().
 Zero-copy interop via wp.to_torch() and wp.from_dlpack().
 
 The mass matrix is densified from the Warp sparse M field. The M field is
-read-only via DLPack on ROCm (the read-only flag is unsupported), so the
-densification happens on CPU: read M to host (600 bytes/env), scatter via
-numpy, move the 7x7 arm submatrix to GPU. This adds ~0.5 ms per control
-step for 10 envs, negligible vs the 84 ms physics step.
+read-only via DLPack on ROCm (the read-only flag is unsupported). The fix is
+to .clone() first (creates a writable PyTorch-owned copy). For this tiny
+matrix (19x19, 153 non-zeros) the densification is done on CPU: the DtoH+HtoD
+transfer (~600 bytes) costs less than 8 GPU kernel launches. The GPU-only
+path (clone + GPU scatter) works correctly but is ~7 ms slower per step.
 
 Supports the spatial suite (task 0). Other suites require porting their
 predicates and obs construction.
@@ -38,7 +39,7 @@ class WarpOscController:
 
     Computes arm joint torques from a 6-DoF Cartesian delta EE action.
     The state-dependent mass matrix is densified from the Warp M field
-    once per control step and reused for all substeps within that step.
+    once per control step and reused for all substeps.
     """
 
     def __init__(
@@ -85,9 +86,13 @@ class WarpOscController:
     def compute_mass_matrix(self, wd: mjwarp.Data) -> Tuple[torch.Tensor, torch.Tensor]:
         """Densify the Warp sparse mass matrix into the arm 7x7 submatrix.
 
-        Reads the M field from Warp (computed by crb during mjwarp.step),
-        copies to CPU (small: ~600 bytes/env), densifies via numpy scatter,
-        moves the 7x7 arm submatrix to GPU.
+        The M field is read-only via DLPack (ROCm doesn't support the flag),
+        so .clone() is used first. For this tiny matrix (19x19, 153 non-zeros)
+        the CPU densification is faster than GPU: the DtoH+HtoD transfer
+        (~600 bytes) costs less than 8 GPU kernel launches (zeros, scatter,
+        tril, transpose, add, index, inv). The GPU alternative
+        (wp.to_torch(wd.M).clone().squeeze(1) then GPU scatter) works
+        correctly but adds ~7 ms per control step on ROCm.
         """
         M_np = wp.to_torch(wd.M).clone().cpu().numpy().squeeze(1)
         N = M_np.shape[0]
