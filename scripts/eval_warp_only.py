@@ -196,10 +196,26 @@ def main():
     if algo is not None:
         algo.policy.reset()
 
+        _policy = algo.policy
+        def _gpu_get_action(data):
+            _policy.eval()
+            with torch.no_grad():
+                d = _policy.preprocess_input(data, train_mode=False)
+                x = _policy.spatial_encode(d)
+                _policy.latent_queue.append(x)
+                if len(_policy.latent_queue) > _policy.max_seq_len:
+                    _policy.latent_queue.pop(0)
+                x = torch.cat(_policy.latent_queue, dim=1)
+                x = _policy.temporal_encode(x)
+                dist = _policy.policy_head(x[:, -1])
+            return dist.sample().detach().view(-1, 7)
+        _policy.get_action = _gpu_get_action
+
     n_success = 0
     done = [False] * N_ENVS
     steps = [0] * N_ENVS
     t0 = time.time()
+    CHECK_INTERVAL = 50
 
     while not all(done) and max(steps) < args.max_steps:
         images = renderer.render(state_data=state.data)
@@ -218,7 +234,6 @@ def main():
         with torch.no_grad():
             if algo is not None:
                 action = algo.policy.get_action(obs)
-                action = torch.from_numpy(action).to("cuda")
                 action = torch.nan_to_num(action, nan=0.0)
                 action = torch.clamp(action, -1.0, 1.0)
             else:
@@ -226,16 +241,20 @@ def main():
 
         state = vstep(state, jnp.from_dlpack(action))
 
-        success_arr = np.asarray(jax.block_until_ready(state.metrics["success"]))
+        cur_step = max(steps) + 1
         for i in range(N_ENVS):
-            if done[i]:
-                continue
-            steps[i] += 1
-            if bool(success_arr[i] > 0.5) or steps[i] >= args.max_steps:
-                done[i] = True
-        if max(steps) % 50 == 0:
+            if not done[i]:
+                steps[i] += 1
+
+        if cur_step % CHECK_INTERVAL == 0 or all(s >= args.max_steps for s in steps):
+            success_arr = np.asarray(jax.block_until_ready(state.metrics["success"]))
+            for i in range(N_ENVS):
+                if done[i]:
+                    continue
+                if bool(success_arr[i] > 0.5) or steps[i] >= args.max_steps:
+                    done[i] = True
             n_succ = sum(1 for i in range(N_ENVS) if done[i] and steps[i] < args.max_steps)
-            print(f"  step {max(steps)}: success={n_succ}", flush=True)
+            print(f"  step {cur_step}: success={n_succ}", flush=True)
 
     s_arr = np.asarray(jax.block_until_ready(state.metrics["success"]))
     n_success = int(sum(1 for i in range(N_ENVS) if s_arr[i] > 0.5))

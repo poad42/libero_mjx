@@ -171,9 +171,7 @@ class WarpRenderer:
 
         mjwarp.forward(mw_model, mw_data)
         refit_scene_bvh(mw_model, mw_data, self.ctx)
-        wp.synchronize()
         mjwarp.render(mw_model, mw_data, self.ctx)
-        wp.synchronize()
 
         rgb = wp.to_torch(self.ctx.rgb_data).to(torch.int32)
         result = {}

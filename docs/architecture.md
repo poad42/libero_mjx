@@ -15,6 +15,86 @@ The environment stack runs physics on GPU and renders on GPU. Three libraries sh
 7. The BC policy takes the torch tensors as observation, produces an action tensor.
 8. `jax.vmap(env.step)` applies the action through the OSC controller and steps physics.
 
+## Interop: three separate graphs, not one
+
+The eval loop uses three GPU libraries that do not share a computation graph. JAX runs physics (JIT-compiled). Warp runs rendering (ray tracing kernels). Torch runs the policy (eager mode). The CPU thread orchestrates the loop and exchanges GPU memory pointers via DLPack. No bytes cross the PCIe bus during stepping or rendering, but `wp.synchronize()` and `jax.block_until_ready()` create hard barriers between the three.
+
+```
+JAX state.data (mjx.Data, impl="warp")
+  |
+  +-- qpos.__dlpack__() -> torch.from_dlpack        [zero-copy]
+  |   |
+  |   +-> wp.from_torch(qpos_t)                     [zero-copy]
+  |   |   Warp: mjwarp.forward()
+  |   |   Warp: mjwarp.render()
+  |   |   wp.to_torch(ctx.rgb_data)                 [zero-copy]
+  |   |   Torch: unpack, flip, brightness boost
+  |   |
+  |   +-> qpos_t[:, arm_slice]                      [joint/gripper obs]
+  |
+  +-- Torch policy.get_action(images + obs)
+  |
+  +-- action -> jnp.from_dlpack(action)             [zero-copy back to JAX]
+      JAX: vstep(state, action)
+```
+
+The `WarpRenderer.render()` method does not call `wp.synchronize()`. Warp launches on the same CUDA stream execute in order. The `wp.to_torch()` call creates the dependency for the consumer (the policy). The eval loop batches success checks every 50 steps instead of calling `jax.block_until_ready()` every step.
+
+The policy's `get_action` is monkey-patched to return a GPU tensor. The original LIBERO implementation calls `.cpu().numpy()`, causing a GPU-to-host-to-GPU round-trip per step. The patched version returns `dist.sample().detach().view(-1, 7)` directly.
+
+A unified graph (fusing physics, rendering, and policy into one JIT trace) would eliminate the barriers. That requires porting the OSC controller from JAX to Warp or Torch, and porting the BC policy from Torch to JAX. Both are nontrivial.
+
+## Performance
+
+### Per-phase profiling
+
+Spatial task 0, 10 envs, 50 steps, AMD RX 9070 XT (gfx1201, 16 GiB):
+
+| Phase | 25 substeps (sim_dt=0.002) | 5 substeps (sim_dt=0.01) |
+|-------|------|------|
+| render | 75.2 ms | 94.0 ms |
+| obs (DLPack) | 0.3 ms | 0.3 ms |
+| policy | 7.4 ms | 7.8 ms |
+| step (physics + OSC) | 405.8 ms | 141.2 ms |
+| **total** | **541.4 ms** | **277.3 ms** |
+| **env-steps/s** | **18.5** | **36.1** |
+
+The physics step dominates at 75% of total time with 25 substeps. Each substep runs the JAX OSC controller (Jacobians, mass matrix inverse, nullspace projection) plus `mjx.step`. With 10 envs, each kernel is small and launch overhead dominates. Reducing substeps from 25 to 5 cuts the step time by 2.9x.
+
+The step time decomposes as: `fixed_overhead + n_substeps * per_substep_cost`. From the two measurements: fixed overhead is 75 ms, per-substep cost is 13 ms.
+
+### CPU vs Warp benchmark
+
+Spatial task 0, 50-epoch BC checkpoint, 10 episodes, 600 max steps:
+
+| Path | Envs | Wall time | Env-steps/s | Success |
+|------|------|-----------|-------------|---------|
+| CPU (robosuite, EGL) | 1 | 92.6s | 38.4 | 50% |
+| Warp, 25 substeps | 10 | 317.2s | 18.9 | 50% |
+| Warp, 5 substeps | 10 | 146.6s | 40.9 | 70% |
+| Warp, 5 substeps, seed 999 | 10 | 129.0s | 46.5 | 70% |
+
+The 25-substep Warp eval is slower than CPU (0.5x throughput). The JAX physics step (25 substeps of OSC + mjx.step) takes 406 ms per control step, while the CPU eval runs robosuite on CPU and the policy on GPU in parallel. With 5 substeps (sim_dt=0.01), Warp matches CPU throughput and the success rate rises from 50% to 70%. The coarser timestep makes the robot more responsive to the policy's commands.
+
+### Scaling with batch size
+
+| Envs | Wall time | Total env-steps | Env-steps/s |
+|------|-----------|-----------------|-------------|
+| 10 | 146.6s | 6000 | 40.9 |
+| 50 | 452.1s | 30000 | 66.4 |
+| 100 | OOM | - | - |
+
+The 16 GiB GPU runs out of memory at 100 envs with 2 cameras at 128x128. The render context allocates per-env buffers for the ray tracing output.
+
+### What limits throughput
+
+The bottleneck is not rendering (75 ms) or the policy (7 ms). It is the JAX physics step: 406 ms with 25 substeps, 141 ms with 5 substeps. Each substep launches dozens of small JAX kernels (Jacobian, mass matrix densification, matrix inverse, nullspace projection, mjx.step). With 10 envs, each kernel processes 10 elements and the GPU is underutilized.
+
+Three approaches would help:
+1. **Run physics in Warp directly**: call `mjwarp.step()` instead of `jax.vmap(jax.jit(env.step))`. This eliminates JAX kernel launches. Requires porting the OSC controller to Warp or Torch.
+2. **Increase batch size**: more envs amortizes the per-step overhead. 50 envs gives 66.4 env-steps/s (1.7x CPU). 100 envs OOMs on 16 GiB.
+3. **Reduce substeps**: sim_dt=0.01 gives 5 substeps instead of 25. 2.9x faster step time, 40% higher success rate. The physics is less accurate but the policy tolerates it.
+
 ### Memory layout
 
 `LiberoState` is a `flax.struct.PyTreeNode`. It holds:

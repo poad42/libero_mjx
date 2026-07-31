@@ -111,6 +111,8 @@ scripts/
   eval_bc.py               Evaluate BC via robosuite (CPU)
   eval_warp_only.py        Evaluate BC via Warp physics + rendering (GPU)
   render_comparison.py     Generate CPU vs Warp render comparison images for docs
+  benchmark_eval.py        Benchmark CPU vs Warp eval throughput
+  prof_eval.py             Per-phase profiling of the Warp eval loop
   extract_all_xmls.py      Extract task XMLs from robosuite
   docker_run.sh            Docker wrapper for GPU scripts
 
@@ -179,6 +181,18 @@ Removing transparent geoms (the EEF target spheres & boxes at alpha 0.5 and 0.8)
 | Warp eval, no rendering fixes | 0% |
 
 10 envs per eval. The policy samples actions stochastically, so success rates vary 30 to 50 percentage points across seeds with this sample size.
+
+### CPU vs Warp throughput
+
+Spatial task 0, 10 episodes, 600 max steps, AMD RX 9070 XT:
+
+| Path | Envs | Wall time | Env-steps/s | Success |
+|------|------|-----------|-------------|---------|
+| CPU (robosuite, EGL) | 1 | 92.6s | 38.4 | 50% |
+| Warp, 25 substeps | 10 | 317.2s | 18.9 | 50% |
+| Warp, 5 substeps | 10 | 146.6s | 40.9 | 70% |
+
+The default 25-substep Warp eval is 0.5x CPU throughput. The JAX physics step (75% of time) runs 25 substeps of OSC controller + mjx.step, each launching dozens of small kernels on 10 envs. With 5 substeps (sim_dt=0.01), Warp matches CPU throughput and success rises to 70%. See [docs/architecture.md](docs/architecture.md#performance) for the full profiling breakdown.
 
 ### Spatial suite, CPU eval, 20 episodes per task
 
