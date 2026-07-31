@@ -32,8 +32,6 @@ results/
 # Debug images
 debug_imgs/
 tests/*.png
-
-# Debug model dumps
 rs_model.xml
 wp_model.xml
 

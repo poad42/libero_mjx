@@ -110,6 +110,7 @@ scripts/
   train_bc.py              Train BC transformer on LIBERO demo data
   eval_bc.py               Evaluate BC via robosuite (CPU)
   eval_warp_only.py        Evaluate BC via Warp physics + rendering (GPU)
+  render_comparison.py     Generate CPU vs Warp render comparison images for docs
   extract_all_xmls.py      Extract task XMLs from robosuite
   docker_run.sh            Docker wrapper for GPU scripts
 
@@ -128,6 +129,12 @@ tests/
 ## Rendering fixes
 
 The Warp ray tracer (mujoco_warp) differs from MuJoCo's CPU / EGL renderer in ways that break a BC policy trained on CPU data. `WarpRenderer` in `libero_mjx/render.py` applies five fixes. The first three patch the installed `mujoco_warp` package on disk before import; the last two run at render time.
+
+![CPU vs Warp, agentview](docs/images/compare_agentview.png)
+
+![CPU vs Warp, eye-in-hand](docs/images/compare_eye_in_hand.png)
+
+Left: CPU (EGL). Right: Warp (ray trace) with all fixes applied, brightness 1.15x. Spatial task 0, init state 0, after 5 zero-action steps.
 
 ### Shadow fallback (render_kernel_patch.py)
 

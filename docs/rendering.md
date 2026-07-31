@@ -4,6 +4,11 @@ The Warp ray tracer in mujoco_warp produces images that differ from MuJoCo's CPU
 
 The test setup: spatial task 0, a BC transformer checkpoint trained 50 epochs on CPU demo data, 10 parallel envs, 600 steps per episode. CPU eval gives 50% success (5 of 10 episodes). Warp eval without fixes gives 0%.
 
+![CPU agentview](docs/images/cpu_agentview.png)
+![Warp agentview](docs/images/warp_agentview.png)
+
+CPU (EGL) and Warp (ray trace) agentview renders of spatial task 0, init state 0. Same scene, same camera, all fixes applied.
+
 ## Differences and fixes
 
 ### Shadow fallback constant
