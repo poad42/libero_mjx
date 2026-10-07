@@ -13,8 +13,8 @@ Usage:
     python examples/libero_quickstart.py --suite spatial --task-id 0 --steps 100 \
         --save-image out.png
     python examples/libero_quickstart.py --suite spatial --task-id 0 --batch-bench
-    python examples/libero_quickstart.py --suite object --task-id 0 \
-        --checkpoint checkpoints/object_task0.pth --n-envs 8
+    python examples/libero_quickstart.py --suite spatial --task-id 0 \
+        --checkpoint checkpoints/task0_model_50ep.pth --n-envs 8
 """
 from __future__ import annotations
 

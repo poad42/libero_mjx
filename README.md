@@ -100,6 +100,28 @@ See [docs/datasets.md](docs/datasets.md) for sizes and verification.
 
 ## Quick start
 
+### Runnable example
+
+`examples/libero_quickstart.py` loads one task, runs a batched Warp rollout,
+renders both cameras on the GPU, and prints the throughput and success:
+
+```bash
+python examples/libero_quickstart.py --suite spatial --task-id 0 --n-envs 8 \
+    --steps 20 --save-image /tmp/frame.png
+python examples/libero_quickstart.py --batch-bench
+
+# The 50-epoch spatial task 0 BC checkpoint ships in the repo (21.6 MB).
+# It needs the task demo HDF5 for the shape metadata; see docs/datasets.md.
+python examples/libero_quickstart.py --suite spatial --task-id 0 \
+    --checkpoint checkpoints/task0_model_50ep.pth --n-envs 8
+```
+
+`--save-image` writes one `agentview | eye-in-hand` frame. Inside the container:
+
+```bash
+./scripts/docker_run.sh python examples/libero_quickstart.py --suite spatial --task-id 0
+```
+
 ### Warp environment
 
 ```python

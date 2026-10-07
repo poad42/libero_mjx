@@ -24,8 +24,7 @@ venv/
 .DS_Store
 Thumbs.db
 
-# Checkpoints, results, logs (user-generated)
-checkpoints/
+# Results and logs are user-generated; the small BC checkpoints are tracked.
 results/
 *.log
 docker/logs/
