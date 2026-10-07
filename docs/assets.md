@@ -8,7 +8,7 @@ and 3D model is referenced by absolute path and is **not** redistributed here.
 
 | Source | URL | License | Provides |
 |---|---|---|---|
-| LIBERO | https://github.com/Lifelong-Robot-Learning/LIBERO | MIT (code) | `libero/libero/assets` — object meshes, textures, articulated fixtures, scene XML fragments |
+| LIBERO | https://github.com/cu-basil/LIBERO (fork of Lifelong-Robot-Learning/LIBERO) | MIT (code) | `libero/libero/assets` — object meshes, textures, articulated fixtures, scene XML fragments |
 | robosuite | https://github.com/ARISE-Initiative/robosuite | MIT | `robosuite/models/assets` — Panda arm and gripper meshes, bases, arena textures |
 
 Both are installed by the project itself: LIBERO is cloned and robosuite is a pip

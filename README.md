@@ -39,7 +39,7 @@ container, which does this for you.
 
 The container is reproducible and vendor-parameterised. Everything comes from a
 public source: the TheRock manylinux base image, the pip ROCm SDK, the TheRock
-torch/JAX wheels, the public `AMD-Ecosystem/warp` branch, and PyPI MuJoCo. See
+torch/JAX wheels, the public `cu-basil/warp` branch, and PyPI MuJoCo. See
 [docs/reproducibility.md](docs/reproducibility.md) for the full pin table.
 
 ```bash
@@ -62,17 +62,14 @@ Warp branch by target: `amd-integration-halo` (RDNA, `gfx10xx`/`gfx11xx`/`gfx12x
 or `amd-integration` (CDNA, `gfx9xx`). `scripts/docker_build.sh` picks the right
 one from `GFX_TARGET`.
 
-Rendering works on the public stack. One ordering rule matters: the
-`mujoco_warp` render-kernel patch must run before `mujoco_warp` is imported, or
-warp resolves the nested render megakernel against stale source lines.
-`libero_mjx` does this correctly; see
-[docs/rendering.md](docs/rendering.md#patch-ordering-the-nested-render-megakernel-and-stale-source-lines).
-The GPU Warp renderer works. The CPU (robosuite) renderer does not on this base:
-the AlmaLinux Mesa (23.1) predates gfx1201 EGL support, so `scripts/eval_bc.py`
-and the CPU side of `scripts/render_comparison.py` need a newer Mesa (24.1+) or
-the Ubuntu image. `scripts/eval_warp_only.py`, `scripts/train_bc.py` and all Warp
-paths are unaffected. See
-[docs/rendering.md](docs/rendering.md#cpu-rendering-egl-vs-osmesa).
+Rendering: the GPU Warp renderer is the supported path in the container. The CPU
+(robosuite) renderer needs Mesa 24.1+ for gfx1201 EGL, so `scripts/eval_bc.py`
+and the CPU side of `scripts/render_comparison.py` require a host with a newer
+Mesa. See [docs/rendering.md](docs/rendering.md#cpu-rendering-egl-vs-osmesa).
+
+If you add an entry point, call `patch_render_kernel()` (or `import libero_mjx`)
+before importing `mujoco_warp`; see
+[docs/rendering.md](docs/rendering.md#patch-ordering).
 
 ### Assets
 
@@ -180,7 +177,6 @@ scripts/
   docker_run.sh            Docker wrapper for GPU scripts
 
 docker/
-  patch_warp_llvm23.py     Warp standalone CPU build fix for SDK LLVM 23
   verify_stack.py          Build- and run-time stack verification
 
 tests/
@@ -378,7 +374,7 @@ This project builds on several open-source projects. See [LICENSE](LICENSE) for 
 
 **No binary assets are redistributed.** The 131 task XML files in `libero_mjx/assets/xml/` are derived from LIBERO's robosuite task definitions but contain only scene structure (object placement, robot config, contact parameters). All 3D meshes, textures, and robot models are referenced by path and are not copied into this repository. They come from:
 
-- LIBERO assets — <https://github.com/Lifelong-Robot-Learning/LIBERO> (`libero/libero/assets`), MIT
+- LIBERO assets — the `cu-basil/LIBERO` fork of <https://github.com/Lifelong-Robot-Learning/LIBERO> (`libero/libero/assets`), MIT
 - robosuite assets — <https://github.com/ARISE-Initiative/robosuite> (`robosuite/models/assets`), MIT
 
 `scripts/setup_assets.sh` fetches and links them; [docs/assets.md](docs/assets.md) documents the roots and the `LIBERO_ASSETS_ROOT` / `ROBOSUITE_ASSETS_ROOT` overrides.

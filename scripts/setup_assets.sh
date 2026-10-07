@@ -5,7 +5,7 @@
 # mesh and texture is referenced by absolute path and comes from two upstream
 # projects, neither of which is redistributed here:
 #
-#   LIBERO    https://github.com/Lifelong-Robot-Learning/LIBERO
+#   LIBERO    https://github.com/cu-basil/LIBERO
 #             libero/libero/assets  (meshes, textures, object models)
 #   robosuite https://github.com/ARISE-Initiative/robosuite
 #             robosuite/models/assets  (Panda meshes, grippers, bases, textures)
@@ -24,8 +24,10 @@
 #   ./scripts/setup_assets.sh --no-link       # skip the /opt symlink (no sudo)
 set -euo pipefail
 
-LIBERO_REPO="${LIBERO_REPO:-https://github.com/Lifelong-Robot-Learning/LIBERO.git}"
-LIBERO_COMMIT="${LIBERO_COMMIT:-master}"
+# cu-basil/LIBERO is the public fork that carries the robosuite 1.5.x / torch 2.x
+# compatibility edits this port needs. Upstream LIBERO targets robosuite 1.4.0.
+LIBERO_REPO="${LIBERO_REPO:-https://github.com/cu-basil/LIBERO.git}"
+LIBERO_COMMIT="${LIBERO_COMMIT:-f626699538dbc0e58509a93e469e52e9238c2dc6}"
 LIBERO_BASIL_PATH="${LIBERO_BASIL_PATH:-$HOME/workspace/libero_basil}"
 LINK=1
 
@@ -41,7 +43,9 @@ if [ ! -d "${LIBERO_BASIL_PATH}/.git" ]; then
   git clone "${LIBERO_REPO}" "${LIBERO_BASIL_PATH}"
 fi
 git -C "${LIBERO_BASIL_PATH}" fetch --all --quiet
-git -C "${LIBERO_BASIL_PATH}" checkout --quiet "${LIBERO_COMMIT}"
+git -C "${LIBERO_BASIL_PATH}" checkout --quiet "${LIBERO_COMMIT}" 2>/dev/null \
+  || git -C "${LIBERO_BASIL_PATH}" fetch origin "${LIBERO_COMMIT}" --quiet \
+  && git -C "${LIBERO_BASIL_PATH}" checkout --quiet "${LIBERO_COMMIT}"
 test -d "${LIBERO_BASIL_PATH}/libero/libero/assets" \
   || { echo "[assets] LIBERO assets missing after checkout" >&2; exit 1; }
 echo "[assets]   $(du -sh "${LIBERO_BASIL_PATH}/libero/libero/assets" | cut -f1)"

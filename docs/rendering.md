@@ -134,60 +134,41 @@ The Warp render kernel reads `mat_rgba` when a geom has a material (`geom_matid 
 
 Patching `geom_rgba` into `mat_rgba` for non-textured materials did not change success rates. The brightness boost (1.15x) dominates this effect.
 
-## Patch ordering: the nested render megakernel and stale source lines
+## Patch ordering
 
-If the render megakernel fails to compile with
+`patch_render_kernel()` rewrites `mujoco_warp` source files on disk, so it must
+run **before** anything imports `mujoco_warp`. `libero_mjx/__init__.py` does
+this: `patch_render_kernel()` then `patch_warp_to_gpu()`.
+
+The requirement is not cosmetic. `mujoco_warp` defines `_render_megakernel`
+inside `_build_megakernel`, and warp resolves a function's source from its code
+object's `co_firstlineno` against the file on disk when the kernel is built. If
+the file is rewritten after `mujoco_warp` is imported, the recorded line points
+at a different function and the kernel fails to compile:
 
 ```
 warp._src.codegen.WarpCodegenTypeError: '_build_megakernel__locals___render_megakernel':
 Warp kernels cannot return values.
 ```
 
-the cause is patch ordering, not the warp branch. `mujoco_warp` defines
-`_render_megakernel` **inside** `_build_megakernel`, and warp resolves a
-function's source from its code object's `co_firstlineno` against the file on
-disk **at the time the kernel is built**. If the file is rewritten after the
-module was imported, the line number is stale:
-
-- `libero_mjx` used to call `patch_warp_to_gpu()` first. That imports
-  `mujoco_warp._src.render`, compiling the original file.
-- `patch_render_kernel()` then rewrote `render.py` on disk. Every function below
-  the insertion point shifted, and `_render_megakernel`'s recorded line now
-  pointed at `compute_lighting`.
-- At render time warp sliced the rewritten file at the stale line, got
-  `compute_lighting`, and `ModuleBuilder.build_kernel` rejected the enclosing
-  function's `return _render_megakernel` as a kernel value return.
-
-The fix is in `libero_mjx/__init__.py`: **rewrite the source first, then import
-`mujoco_warp`**. `patch_render_kernel()` now runs before `patch_warp_to_gpu()`.
-With that ordering the render megakernel compiles on the public stack (warp
-`1.17.0+rocm.0` @ `amd-integration-halo`, `mujoco_warp` 3.13, gfx1201).
-
-There is also a latent warp bug here: the fast source-extraction path validates
-that `tree.body[0].name == code.co_name`, but the `inspect.getsourcelines`
-fallback does not. `docker/patch_warp_nested_kernel.py` makes the fallback
-validate and recover by name. It is applied at image build time as defence in
-depth; the ordering fix alone is sufficient.
+When adding an entry point, call `patch_render_kernel()` (or `import libero_mjx`,
+which does it) before importing `mujoco_warp`. The eval scripts that load
+`render_kernel_patch` by path already do this.
 
 ## CPU rendering: EGL vs OSMesa
 
-The reproducible image is built on the TheRock manylinux base (AlmaLinux 8),
-whose Mesa is 23.1. That predates gfx1201 support in the EGL device platform, so
-hardware EGL is unavailable: `MUJOCO_GL=egl` fails with "EGL driver does not
-support the PLATFORM_DEVICE extension". The image installs `mesa-dri-drivers` and
-`mesa-libOSMesa` and sets `MUJOCO_GL=osmesa`. Plain MuJoCo renders in software
-that way, but **robosuite 1.5.1 still segfaults** when it creates its offscreen
-context on this Mesa, in every combination tried (EGL/OSMesa, hardware/llvmpipe).
+The GPU Warp renderer does not use `MUJOCO_GL` and is the supported render path
+in the container.
 
-Consequences:
-
-- The GPU Warp renderer does not use `MUJOCO_GL` and works normally. This is the
-  supported render path in the container.
-- The CPU reference path (`scripts/render_comparison.py`) and the CPU eval
-  (`scripts/eval_bc.py`) need a Mesa with gfx1201 EGL support (24.1+). The
-  comparison images in this repository were generated on an Ubuntu 24.04 image
-  with a newer Mesa; regenerate them on such a host.
-- On a host with a newer Mesa, set `MUJOCO_GL=egl` and the CPU paths work.
+The CPU (robosuite) renderer needs a Mesa with gfx1201 EGL support (24.1+). The
+AlmaLinux base ships Mesa 23.1, so `MUJOCO_GL=egl` fails there with "EGL driver
+does not support the PLATFORM_DEVICE extension", and robosuite 1.5.1 segfaults
+creating its offscreen context under OSMesa/llvmpipe as well. The image installs
+`mesa-dri-drivers` and `mesa-libOSMesa` and sets `MUJOCO_GL=osmesa` for plain
+MuJoCo, but `scripts/eval_bc.py` and the CPU side of
+`scripts/render_comparison.py` need a host with a newer Mesa (set
+`MUJOCO_GL=egl` there). The comparison images in this repository were generated
+on such a host.
 
 ## Scene flags
 

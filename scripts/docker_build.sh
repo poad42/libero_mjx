@@ -49,9 +49,12 @@ docker build \
   --build-arg "TORCHVISION_VERSION=${TORCHVISION_VERSION:-0.28.0}" \
   --build-arg "JAX_VERSION=${JAX_VERSION:-0.11.1}" \
   --build-arg "MUJOCO_VERSION=${MUJOCO_VERSION:-3.13.0}" \
+  --build-arg "WARP_REPO=${WARP_REPO:-https://github.com/cu-basil/warp.git}" \
   --build-arg "WARP_BRANCH=${WARP_BRANCH}" \
+  --build-arg "WARP_COMMIT=${WARP_COMMIT:-3fee69ec6329f8d73087e5e91f2f167fb3599a06}" \
   --build-arg "WARP_VERSION=${WARP_VERSION}" \
-  --build-arg "LIBERO_COMMIT=${LIBERO_COMMIT:-8f1084e3132a39270c3a13ebe37270a43ece2a01}" \
+  --build-arg "LIBERO_REPO=${LIBERO_REPO:-https://github.com/cu-basil/LIBERO.git}" \
+  --build-arg "LIBERO_COMMIT=${LIBERO_COMMIT:-f626699538dbc0e58509a93e469e52e9238c2dc6}" \
   -t "${IMAGE}" \
   -f Dockerfile . 2>&1 | tee "${LOG}"
 

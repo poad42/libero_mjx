@@ -38,15 +38,20 @@ ARG MUJOCO_VERSION=3.13.0
 # AMD's public warp port has two branches. `amd-integration-halo` is the RDNA
 # (wave32) successor used for gfx10xx/gfx11xx/gfx12xx; CDNA (wave64, gfx9xx)
 # still needs the older `amd-integration` branch. scripts/docker_build.sh picks
-# the branch from GFX_TARGET and passes both as build args.
-ARG WARP_REPO=https://github.com/AMD-Ecosystem/warp.git
+# the branch from GFX_TARGET and passes both as build args. cu-basil/warp is a
+# public fork of AMD-Ecosystem/warp; the pinned commit adds the LLVM 23
+# warp-clang build fixes and the nested-definition source-extraction fix, so no
+# patch is applied on top.
+ARG WARP_REPO=https://github.com/cu-basil/warp.git
 ARG WARP_BRANCH=amd-integration-halo
+ARG WARP_COMMIT=3fee69ec6329f8d73087e5e91f2f167fb3599a06
 ARG WARP_VERSION=1.17.0+rocm.0
-# LIBERO master is pinned; the repository also needs a small set of robosuite
-# 1.5.x / torch 2.x compatibility patches that are not in upstream. They are
-# applied from docker/patches/ after checkout.
-ARG LIBERO_REPO=https://github.com/Lifelong-Robot-Learning/LIBERO.git
-ARG LIBERO_COMMIT=8f1084e3132a39270c3a13ebe37270a43ece2a01
+# LIBERO: the port targets robosuite 1.5.x / torch 2.x. Upstream LIBERO is
+# written against robosuite 1.4.0, so this uses the public cu-basil fork, which
+# carries the compatibility edits (SingleArmEnv -> ManipulationEnv, composite
+# controller body_parts, weights_only=False, gymnasium).
+ARG LIBERO_REPO=https://github.com/cu-basil/LIBERO.git
+ARG LIBERO_COMMIT=f626699538dbc0e58509a93e469e52e9238c2dc6
 ARG PIP_INDEX=https://pypi.org/simple
 
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1
@@ -131,16 +136,13 @@ RUN if [ "${ACCELERATOR}" = "rocm" ]; then \
 # --------------------------------------------------------------------------
 # Warp, built from the public AMD branch (ROCm) or PyPI wheel (CUDA)
 # --------------------------------------------------------------------------
-COPY docker/patch_warp_llvm23.py /tmp/patch_warp_llvm23.py
-COPY docker/patch_warp_nested_kernel.py /tmp/patch_warp_nested_kernel.py
-COPY docker/patches/ /tmp/patches/
+
 RUN if [ "${ACCELERATOR}" = "rocm" ]; then \
       pip install --no-cache-dir numpy setuptools packaging wheel \
-      && git clone --depth 1 --branch "${WARP_BRANCH}" "${WARP_REPO}" /opt/warp_src \
+      && git clone --branch "${WARP_BRANCH}" "${WARP_REPO}" /opt/warp_src \
+      && git -C /opt/warp_src checkout --quiet "${WARP_COMMIT}" \
       && printf '%s\n' "${WARP_VERSION}" > /opt/warp_src/VERSION.md \
       && sed -i "s/^version: str = .*/version: str = \"${WARP_VERSION}\"/" /opt/warp_src/warp/config.py \
-      && python /tmp/patch_warp_llvm23.py /opt/warp_src \
-      && python /tmp/patch_warp_nested_kernel.py /opt/warp_src \
       && cd /opt/warp_src \
       && ( HIP_ARCH=${GFX_TARGET} WARP_GLIBCXX_USE_CXX11_ABI=1 ./build_amd.sh --llvm-path="${HIP_LLVM_PATH}" \
            || HIP_ARCH=${GFX_TARGET} ./build_amd.sh --no-standalone ) \
@@ -165,7 +167,6 @@ RUN python -c "import os,pathlib,shutil,mujoco; t=pathlib.Path(mujoco.__file__).
 # the XMLs (see libero_mjx/envs/base.py).
 RUN git clone "${LIBERO_REPO}" /workspace/libero_basil \
  && git -C /workspace/libero_basil checkout --quiet "${LIBERO_COMMIT}" \
- && git -C /workspace/libero_basil apply -p1 /tmp/patches/libero_robosuite15.patch \
  && test -d /workspace/libero_basil/libero/libero/assets \
  && echo "libero assets: $(du -sh /workspace/libero_basil/libero/libero/assets | cut -f1)"
 
