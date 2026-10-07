@@ -18,6 +18,7 @@ from ml_collections import config_dict
 import mujoco
 from mujoco import mjx
 
+from libero_mjx.assets import resolve_asset_roots
 from libero_mjx.controllers.osc import OscController
 from libero_mjx.obs import build_obs
 from libero_mjx.predicates.spatial import PredicateFn
@@ -58,7 +59,7 @@ class LiberoMjxEnv(abc.ABC):
 
         xml_path = epath.Path(xml_path) if not isinstance(xml_path, epath.Path) else xml_path
         self._xml_path = xml_path.as_posix()
-        xml = xml_path.read_text()
+        xml = resolve_asset_roots(xml_path.read_text())
         self._model_assets = self._get_assets()
         mj_model = mujoco.MjModel.from_xml_string(xml, assets=self._model_assets)
         mj_model.opt.timestep = self.sim_dt

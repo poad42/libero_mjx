@@ -28,6 +28,7 @@ Thumbs.db
 checkpoints/
 results/
 *.log
+docker/logs/
 
 # Debug images
 debug_imgs/

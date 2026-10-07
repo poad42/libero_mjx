@@ -30,6 +30,23 @@ For BC training and evaluation, see scripts/train_bc.py and scripts/eval_bc.py.
 """
 
 # Patch Warp GPU detection + texture type code before importing anything else.
+# The render kernel patch rewrites mujoco_warp source files on disk, so it must
+# run before ANY module that imports mujoco_warp. patch_warp_to_gpu imports
+# mujoco_warp (via mujoco_warp._src.bvh/types), so the ordering here matters:
+# rewriting the source after the module is imported leaves the compiled module
+# and the on-disk file out of sync, and warp's later source extraction for the
+# nested render megakernel then reads the wrong lines. Patch first, import after.
+# A version whose source layout the patch does not recognise still imports; only
+# the renderer differs, so warn rather than fail.
+try:
+    from libero_mjx.render_kernel_patch import patch_render_kernel
+    patch_render_kernel()
+except ModuleNotFoundError:
+    pass
+except Exception as _exc:  # noqa: BLE001
+    import warnings as _warnings
+    _warnings.warn(f"render kernel patch skipped: {_exc}")
+
 # These patches must run before any warp/mujoco_warp import.
 from libero_mjx.warp_gpu_patch import patch_warp_to_gpu
 patch_warp_to_gpu()

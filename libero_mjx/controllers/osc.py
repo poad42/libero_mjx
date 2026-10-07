@@ -244,16 +244,25 @@ class OscController:
         return J_full, J_pos, J_ori, mass
 
     def _mass_matrix(self, data: mjx.Data) -> jax.Array:
-        """State-dependent mass matrix from mjx.full_m (computed each substep)."""
+        """State-dependent mass matrix from mjx.full_m (computed each substep).
+
+        ``mjx.full_m`` returns a sparse mass matrix on the Warp implementation:
+        ``(nM,)`` for a single world and ``(nworld, nM)`` for a batch, where
+        ``nM`` is the number of non-zeros. Some versions return a dense
+        ``(..., nv, nv)`` instead. Densify anything that is not already dense.
+        """
         M = mjx.full_m(self._model, data)
-        # mjx.full_m returns (nworld, nM) sparse for warp impl
-        if M.ndim == 2 and M.shape[-1] != self._model.nv:
-            # Sparse: densify
+        nv = self._model.nv
+        if M.ndim == 1:
+            # Single world, sparse: (nM,) -> (nv, nv)
+            return self._densify_mass(M)
+        if M.shape[-1] != nv:
+            # Batched sparse: (nworld, nM) -> (nworld, nv, nv). Collapse a leading
+            # singleton so a single-world call keeps an unbatched (nv, nv).
             batch_shape = data.qpos.shape[:-1]
             if len(batch_shape) == 0 and M.shape[0] == 1:
-                M = self._densify_mass(M[0])
-            else:
-                M = self._densify_mass(M)
+                return self._densify_mass(M[0])
+            return self._densify_mass(M)
         return M
 
     def _densify_mass(self, qM_sparse: jax.Array) -> jax.Array:

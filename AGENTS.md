@@ -58,6 +58,18 @@ pi -p --provider ollama --model "glm-5.2:cloud" "list the LIBERO suites"
 ## Commands (repo + GPU scripts)
 
 ```bash
+# Reproducible container (public sources; see docs/reproducibility.md):
+#   ./scripts/docker_build.sh                        # AMD ROCm gfx1201
+#   GFX_TARGET=gfx942 ./scripts/docker_build.sh      # CDNA (warp amd-integration)
+#   ACCELERATOR=cuda ./scripts/docker_build.sh       # NVIDIA
+#   ./scripts/docker_run.sh python /opt/verify_stack.py
+#   ./scripts/docker_run.sh python scripts/render_comparison.py
+
+# Assets and datasets (not redistributed):
+#   ./scripts/setup_assets.sh                        # LIBERO + robosuite assets
+#   python scripts/download_datasets.py --suite spatial
+#   python scripts/download_datasets.py --suite all --verify-only
+
 # Repo tests (need GPU env):
 #   pytest tests/   (run inside the Docker venv)
 

@@ -11,6 +11,40 @@ CPU (EGL) and Warp (ray trace) agentview renders of spatial task 0, init state 0
 
 ## Differences and fixes
 
+### Cube-map material textures
+
+The Warp `sample_texture` treats every texture as 2D: it computes a `(u, v)`
+pair and samples once. A cube texture is stored as six faces, so a cube material
+samples a horizontal line across the strip instead of the intended image. In
+LIBERO the table (`tex-table`, wood grain) and the stove top render flat.
+
+MuJoCo's classic renderer (`render_gl3.c` / `render_context.c`) has two cube
+cases:
+
+- **6:1 strip** (`tex_width != tex_height`): six faces stacked vertically.
+  `sample_skybox` already does this mapping for the skybox; the fix applies the
+  same face mapping to material textures. GL samples with the object-space
+  direction `(x, y, z)` scaled by `geom_size` when `texuniform` is set.
+- **square** (`tex_width == tex_height`): MuJoCo uploads the single image to all
+  six faces, and the classic renderer projects object space **planarly**. The
+  fix samples the single image with the object-space `xy`.
+
+`render_cube_patch.py` adds a per-texture `tex_cube_face_inv` array to
+`RenderContext` (`0` = 2D, `> 0` = 6:1 strip, `< 0` = square), a
+`sample_cube_texture` function, and the kernel plumbing. 2D textures are
+untouched. The patch is applied automatically by `libero_mjx`.
+
+Measured on spatial task 0, 256x256, brightness 1.15:
+
+| Camera | RMSE before | RMSE after |
+|---|---|---|
+| agentview | 24.16 | 21.45 |
+| eye-in-hand | 29.92 | 20.38 |
+
+The eye-in-hand camera is dominated by the table, so the cube-map fix is a 32%
+reduction there. The agentview background is still skybox-dominated, so its
+reduction is smaller.
+
 ### Shadow fallback constant
 
 The Warp render megakernel in `_render_megakernel` sets `visible = NO_LIGHT_AMBIENT_FALLBACK` when a light's ray to a surface point is blocked by another geom. `NO_LIGHT_AMBIENT_FALLBACK` is 0.3. This means shadowed geometry keeps 30% of the diffuse & specular contribution from the blocked light.
@@ -82,9 +116,11 @@ A 1.15x brightness multiplier on the output RGB raised average success from 30% 
 
 ### Replacing cube map textures with flat colors
 
-The Warp renderer's `sample_texture` function treats cube map textures (type=1) as 2D textures. It samples a vertical strip of 6 faces as if it were one 2D image. This produces incorrect texture mapping on geoms that use cube map materials.
-
-Replacing cube map textures with their average color (removing the texture, setting `mat_rgba` to the mean RGB) produced 0% success. The policy relies on texture features that the incorrect 2D sampling still partially provides. Flat colors provide none.
+Before the cube-map fix, a workaround was to replace cube textures with their
+average color. That produced 0% success: the policy relies on texture features
+that even the incorrect 2D sampling partially provides, and flat colors provide
+none. The correct fix (see above) samples the cube map properly and keeps the
+texture.
 
 ### Removing transparent geoms
 
@@ -97,6 +133,61 @@ The training data includes these geoms with alpha blending. Removing them change
 The Warp render kernel reads `mat_rgba` when a geom has a material (`geom_matid >= 0`). MuJoCo's CPU renderer multiplies `geom_rgba` by `mat_rgba` for non-textured geoms. For most LIBERO robot parts, `geom_rgba = [0.5, 0.5, 0.5]` and `mat_rgba = [1, 1, 1]`, so Warp renders them at full brightness while CPU renders them at 50%.
 
 Patching `geom_rgba` into `mat_rgba` for non-textured materials did not change success rates. The brightness boost (1.15x) dominates this effect.
+
+## Patch ordering: the nested render megakernel and stale source lines
+
+If the render megakernel fails to compile with
+
+```
+warp._src.codegen.WarpCodegenTypeError: '_build_megakernel__locals___render_megakernel':
+Warp kernels cannot return values.
+```
+
+the cause is patch ordering, not the warp branch. `mujoco_warp` defines
+`_render_megakernel` **inside** `_build_megakernel`, and warp resolves a
+function's source from its code object's `co_firstlineno` against the file on
+disk **at the time the kernel is built**. If the file is rewritten after the
+module was imported, the line number is stale:
+
+- `libero_mjx` used to call `patch_warp_to_gpu()` first. That imports
+  `mujoco_warp._src.render`, compiling the original file.
+- `patch_render_kernel()` then rewrote `render.py` on disk. Every function below
+  the insertion point shifted, and `_render_megakernel`'s recorded line now
+  pointed at `compute_lighting`.
+- At render time warp sliced the rewritten file at the stale line, got
+  `compute_lighting`, and `ModuleBuilder.build_kernel` rejected the enclosing
+  function's `return _render_megakernel` as a kernel value return.
+
+The fix is in `libero_mjx/__init__.py`: **rewrite the source first, then import
+`mujoco_warp`**. `patch_render_kernel()` now runs before `patch_warp_to_gpu()`.
+With that ordering the render megakernel compiles on the public stack (warp
+`1.17.0+rocm.0` @ `amd-integration-halo`, `mujoco_warp` 3.13, gfx1201).
+
+There is also a latent warp bug here: the fast source-extraction path validates
+that `tree.body[0].name == code.co_name`, but the `inspect.getsourcelines`
+fallback does not. `docker/patch_warp_nested_kernel.py` makes the fallback
+validate and recover by name. It is applied at image build time as defence in
+depth; the ordering fix alone is sufficient.
+
+## CPU rendering: EGL vs OSMesa
+
+The reproducible image is built on the TheRock manylinux base (AlmaLinux 8),
+whose Mesa is 23.1. That predates gfx1201 support in the EGL device platform, so
+hardware EGL is unavailable: `MUJOCO_GL=egl` fails with "EGL driver does not
+support the PLATFORM_DEVICE extension". The image installs `mesa-dri-drivers` and
+`mesa-libOSMesa` and sets `MUJOCO_GL=osmesa`. Plain MuJoCo renders in software
+that way, but **robosuite 1.5.1 still segfaults** when it creates its offscreen
+context on this Mesa, in every combination tried (EGL/OSMesa, hardware/llvmpipe).
+
+Consequences:
+
+- The GPU Warp renderer does not use `MUJOCO_GL` and works normally. This is the
+  supported render path in the container.
+- The CPU reference path (`scripts/render_comparison.py`) and the CPU eval
+  (`scripts/eval_bc.py`) need a Mesa with gfx1201 EGL support (24.1+). The
+  comparison images in this repository were generated on an Ubuntu 24.04 image
+  with a newer Mesa; regenerate them on such a host.
+- On a host with a newer Mesa, set `MUJOCO_GL=egl` and the CPU paths work.
 
 ## Scene flags
 
@@ -114,14 +205,20 @@ The skybox texture is tex 0, type 2 (SKYBOX), 256x1536 pixels (6 faces of 256x25
 
 ## Remaining differences
 
-After all fixes, the Warp-vs-EGL RMSE is 22.2 on spatial task 0. The breakdown:
+After all fixes, the Warp-vs-EGL RMSE is 21.5 (agentview) and 20.4
+(eye-in-hand) at 256x256 on spatial task 0, down from 24.2 and 29.9 before the
+cube-map fix. The remaining gap is:
 
 | Region | RMSE |
 |---|---|
 | Background (skybox) | 18.1 |
 | Objects | 20.5 |
-| Table | 3.9 |
+| Table | 3.9 before the cube fix, lower after |
 
-The background difference is the skybox brightness (Warp is 85% of EGL). The object difference comes from the cube map texture sampling issue and the absence of alpha blending on EEF target geoms. The table matches well.
+The background difference is the skybox brightness (Warp is ~85% of EGL). The
+object difference is the absence of alpha blending on the EEF target geoms, and
+the residual brightness mismatch. The table now matches well.
 
-These remaining differences account for the gap between Warp eval (42.5%) and CPU eval (50%). Fixing them would require implementing cube map texture sampling and alpha blending in the Warp ray tracer, which is a larger change to the mujoco_warp render kernel.
+These remaining differences account for the gap between Warp eval (42.5%) and
+CPU eval (50%). Alpha blending and a principled exposure correction would need
+changes to the mujoco_warp render kernel.

@@ -30,18 +30,76 @@ You need Python 3.10+, MuJoCo 3.1.0+, JAX 0.4.28+, and Warp 1.0+. A CUDA or ROCm
 
 **NVIDIA:** `pip install jax[cuda12]`
 
-**AMD ROCm:** `pip install jax-rocm7-pjrt` and set `JAX_PLATFORMS=` for auto-detect.
+**AMD ROCm:** use the pip ROCm SDK and the matching JAX wheels. For ROCm 10.x
+that is `jax-rocm10-plugin` + `jax-rocm10-pjrt`; pin them to the same version as
+`jax`. See [docs/reproducibility.md](docs/reproducibility.md) or just use the
+container, which does this for you.
 
-### Docker
+### Docker (recommended)
 
-A Dockerfile targets AMD ROCm (gfx1201 / RDNA 4). For NVIDIA, swap the ROCm block for the CUDA toolkit.
+The container is reproducible and vendor-parameterised. Everything comes from a
+public source: the TheRock manylinux base image, the pip ROCm SDK, the TheRock
+torch/JAX wheels, the public `AMD-Ecosystem/warp` branch, and PyPI MuJoCo. See
+[docs/reproducibility.md](docs/reproducibility.md) for the full pin table.
 
 ```bash
-docker build -t libero-mjx .
+./scripts/docker_build.sh                          # AMD ROCm, gfx1201 (default)
+GFX_TARGET=gfx942 ./scripts/docker_build.sh        # CDNA
+ACCELERATOR=cuda ./scripts/docker_build.sh         # NVIDIA
+
+./scripts/docker_run.sh python /opt/verify_stack.py
 ./scripts/docker_run.sh python tests/test_all_suites.py
 ```
 
-`scripts/docker_run.sh` passes through all arguments to the container. It sets `JAX_PLATFORMS=rocm`, `XLA_PYTHON_CLIENT_MEM_FRACTION=0.15`, and mounts the repo at `/workspace/libero-mjx`.
+`scripts/docker_run.sh` passes all arguments through to the container. It sets
+`JAX_PLATFORMS=rocm`, `XLA_PYTHON_CLIENT_MEM_FRACTION=0.15`, mounts the repo at
+`/workspace/libero-mjx`, and optionally mounts a host LIBERO checkout
+(`LIBERO_BASIL_PATH`), datasets (`LIBERO_DATASETS`) and robosuite assets
+(`ROBOSUITE_ASSETS`). The image already contains LIBERO and robosuite assets, so
+these mounts are only needed to override them.
+
+Warp branch by target: `amd-integration-halo` (RDNA, `gfx10xx`/`gfx11xx`/`gfx12xx`)
+or `amd-integration` (CDNA, `gfx9xx`). `scripts/docker_build.sh` picks the right
+one from `GFX_TARGET`.
+
+Rendering works on the public stack. One ordering rule matters: the
+`mujoco_warp` render-kernel patch must run before `mujoco_warp` is imported, or
+warp resolves the nested render megakernel against stale source lines.
+`libero_mjx` does this correctly; see
+[docs/rendering.md](docs/rendering.md#patch-ordering-the-nested-render-megakernel-and-stale-source-lines).
+The GPU Warp renderer works. The CPU (robosuite) renderer does not on this base:
+the AlmaLinux Mesa (23.1) predates gfx1201 EGL support, so `scripts/eval_bc.py`
+and the CPU side of `scripts/render_comparison.py` need a newer Mesa (24.1+) or
+the Ubuntu image. `scripts/eval_warp_only.py`, `scripts/train_bc.py` and all Warp
+paths are unaffected. See
+[docs/rendering.md](docs/rendering.md#cpu-rendering-egl-vs-osmesa).
+
+### Assets
+
+The task XMLs reference meshes and textures by path; none are redistributed.
+LIBERO (MIT code) provides `libero/libero/assets`, robosuite (MIT) provides
+`robosuite/models/assets`. On a host:
+
+```bash
+pip install robosuite==1.5.1
+./scripts/setup_assets.sh
+```
+
+A non-canonical layout is supported with `LIBERO_ASSETS_ROOT` and
+`ROBOSUITE_ASSETS_ROOT`; the loader rewrites the XML roots in memory. See
+[docs/assets.md](docs/assets.md).
+
+### Datasets
+
+BC training uses LIBERO human demonstrations, published under CC BY 4.0 at
+<https://huggingface.co/datasets/yifengzhu-hf/LIBERO-datasets>.
+
+```bash
+python scripts/download_datasets.py --suite spatial     # ~6.2 GB
+python scripts/download_datasets.py --suite all         # ~100 GB
+```
+
+See [docs/datasets.md](docs/datasets.md) for sizes and verification.
 
 ## Quick start
 
@@ -116,7 +174,14 @@ scripts/
   eval_warp_native.py      Eval via pure Warp + Torch (no JAX) physics
   prof_warp_native.py      Per-phase profiling of the Warp native eval
   extract_all_xmls.py      Extract task XMLs from robosuite
+  setup_assets.sh          Fetch LIBERO + link robosuite assets
+  download_datasets.py     Download LIBERO demo datasets (CC BY 4.0)
+  docker_build.sh          Build the reproducible image (ROCm or CUDA)
   docker_run.sh            Docker wrapper for GPU scripts
+
+docker/
+  patch_warp_llvm23.py     Warp standalone CPU build fix for SDK LLVM 23
+  verify_stack.py          Build- and run-time stack verification
 
 tests/
   test_all_suites.py       Smoke test: all 5 suites load & step
@@ -132,13 +197,17 @@ tests/
 
 ## Rendering fixes
 
-The Warp ray tracer (mujoco_warp) differs from MuJoCo's CPU / EGL renderer in ways that break a BC policy trained on CPU data. `WarpRenderer` in `libero_mjx/render.py` applies five fixes. The first three patch the installed `mujoco_warp` package on disk before import; the last two run at render time.
+The Warp ray tracer (mujoco_warp) differs from MuJoCo's CPU / EGL renderer in ways that break a BC policy trained on CPU data. `WarpRenderer` in `libero_mjx/render.py` applies the fixes below. The kernel and texture fixes patch the installed `mujoco_warp` package on disk before import; the flip and brightness fixes run at render time.
+
+### Cube-map material textures (render_cube_patch.py)
+
+Warp sampled every texture as 2D, so cube materials (the table wood grain, the stove top) rendered as a flat smear. The patch reproduces MuJoCo's classic cube texgen for both layouts: a 6:1 strip of six faces and a square texture that MuJoCo repeats on all six sides. On spatial task 0 this cuts eye-in-hand RMSE from 29.9 to 20.4. See [docs/rendering.md](docs/rendering.md#cube-map-material-textures).
 
 ![CPU vs Warp, agentview](docs/images/compare_agentview.png)
 
 ![CPU vs Warp, eye-in-hand](docs/images/compare_eye_in_hand.png)
 
-Left: CPU (EGL). Right: Warp (ray trace) with all fixes applied, brightness 1.15x. Spatial task 0, init state 0, after 5 zero-action steps.
+Left: CPU (EGL). Right: Warp (ray trace) with all fixes applied, brightness 1.15x. Spatial task 0, init state 0, after 5 zero-action steps. Regenerate with `python scripts/render_comparison.py`.
 
 ### Shadow fallback (render_kernel_patch.py)
 
@@ -244,10 +313,18 @@ python scripts/train_bc.py --suite spatial --task-id 0 --epochs 50 --save ckpt.p
 
 ### Download demo data
 
+```bash
+python scripts/download_datasets.py --suite spatial
+```
+
+The datasets are CC BY 4.0 and come from LIBERO's HuggingFace hub,
+<https://huggingface.co/datasets/yifengzhu-hf/LIBERO-datasets>. Sizes, the
+pinned revision, the original Box fallback links, and a content check are in
+[docs/datasets.md](docs/datasets.md). LIBERO's own downloader still works:
+
 ```python
 from libero.libero.utils.download_utils import libero_dataset_download
 libero_dataset_download(datasets="libero_spatial", use_huggingface=True)
-# Also: libero_object, libero_goal, libero_10, libero_90
 ```
 
 ## Patches
@@ -284,6 +361,9 @@ Patches three files in the installed `mujoco_warp` package on disk: `render.py`,
 - [docs/rendering.md](docs/rendering.md): CPU vs Warp rendering differences and fixes
 - [docs/physics.md](docs/physics.md): Warp physics verification & known differences
 - [docs/api.md](docs/api.md): public API reference for `LiberoEnv`, `WarpRenderer`, and `OscController`
+- [docs/reproducibility.md](docs/reproducibility.md): container pin table, build args, verification
+- [docs/assets.md](docs/assets.md): where the 3D assets come from and how to link them
+- [docs/datasets.md](docs/datasets.md): where the demo datasets come from and how to fetch them
 
 ## Attribution & Third-Party Licenses
 
@@ -296,9 +376,14 @@ This project builds on several open-source projects. See [LICENSE](LICENSE) for 
 | [MuJoCo](https://github.com/google-deepmind/mujoco) / [MuJoCo Warp](https://github.com/google-deepmind/mujoco_warp) | Apache 2.0 | GPU-parallel physics simulation |
 | [robomimic](https://github.com/ARISE-Initiative/robomimic) | MIT | BC transformer policy architecture |
 
-**No binary assets are redistributed.** The 131 task XML files in `libero_mjx/assets/xml/` are derived from LIBERO's robosuite task definitions but contain only scene structure (object placement, robot config, contact parameters). All 3D meshes, textures, and robot models are referenced by absolute path from the LIBERO and robosuite packages at runtime and are not copied into this repository.
+**No binary assets are redistributed.** The 131 task XML files in `libero_mjx/assets/xml/` are derived from LIBERO's robosuite task definitions but contain only scene structure (object placement, robot config, contact parameters). All 3D meshes, textures, and robot models are referenced by path and are not copied into this repository. They come from:
 
-**Demonstration datasets** used for BC training are downloaded from LIBERO's HuggingFace hub and are licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
+- LIBERO assets — <https://github.com/Lifelong-Robot-Learning/LIBERO> (`libero/libero/assets`), MIT
+- robosuite assets — <https://github.com/ARISE-Initiative/robosuite> (`robosuite/models/assets`), MIT
+
+`scripts/setup_assets.sh` fetches and links them; [docs/assets.md](docs/assets.md) documents the roots and the `LIBERO_ASSETS_ROOT` / `ROBOSUITE_ASSETS_ROOT` overrides.
+
+**Demonstration datasets** used for BC training are downloaded from LIBERO's HuggingFace hub, <https://huggingface.co/datasets/yifengzhu-hf/LIBERO-datasets>, and are licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). `scripts/download_datasets.py` fetches them; [docs/datasets.md](docs/datasets.md) records sizes and verification.
 
 ## Citation
 

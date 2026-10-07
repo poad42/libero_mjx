@@ -32,10 +32,37 @@ Asset Attribution
 
 3D object models, textures, and robot meshes are NOT redistributed
 in this repository. They remain in their respective upstream packages
-(LIBERO, robosuite) and are referenced by absolute file path at
-runtime. The 131 task XML files contain only scene structure and
-object placement metadata.
+and are referenced by file path at runtime. The 131 task XML files
+contain only scene structure and object placement metadata.
+
+  LIBERO assets    https://github.com/Lifelong-Robot-Learning/LIBERO
+                   libero/libero/assets   (MIT)
+  robosuite assets https://github.com/ARISE-Initiative/robosuite
+                   robosuite/models/assets   (MIT)
+
+scripts/setup_assets.sh fetches LIBERO and links the robosuite assets.
+See docs/assets.md for the asset roots and the LIBERO_ASSETS_ROOT /
+ROBOSUITE_ASSETS_ROOT overrides.
 
 Demonstration datasets are licensed by LIBERO under
-Creative Commons Attribution 4.0 International (CC BY 4.0)
-and are downloaded from the LIBERO HuggingFace hub.
+Creative Commons Attribution 4.0 International (CC BY 4.0) and are
+downloaded from the LIBERO HuggingFace hub:
+
+  https://huggingface.co/datasets/yifengzhu-hf/LIBERO-datasets
+
+scripts/download_datasets.py fetches them. See docs/datasets.md.
+
+Container sources
+-----------------
+
+The reproducible container is built from public sources only:
+
+  base image  ghcr.io/rocm/therock_build_manylinux_x86_64
+              https://github.com/ROCm/TheRock
+  warp        https://github.com/AMD-Ecosystem/warp
+  torch/JAX   https://stable.repo.amd.com/rocm/whl-next/
+              (ROCm/TheRock multi-arch release index)
+  MuJoCo      https://github.com/google-deepmind/mujoco
+  LIBERO      https://github.com/Lifelong-Robot-Learning/LIBERO
+
+See docs/reproducibility.md for the pin table.

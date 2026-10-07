@@ -23,6 +23,8 @@ Usage::
 """
 from __future__ import annotations
 
+import importlib
+import inspect
 from typing import Dict, Sequence
 
 import numpy as np
@@ -37,7 +39,11 @@ except ImportError:
         0, "/opt/venv/lib/python3.12/site-packages/mujoco/mjx/third_party"
     )
     import mujoco_warp as mjwarp
-from mujoco_warp._src.bvh import refit_scene_bvh
+
+try:
+    from mujoco_warp._src.bvh import refit_scene_bvh
+except ImportError:  # newer versions moved/renamed the refit helper
+    refit_scene_bvh = None
 
 
 _IMG_H = 128
@@ -50,22 +56,35 @@ _CAMERA_KEY_MAP = {
 
 
 def _patch_bvh():
-    """Patch cubql -> lbvh for HIP/ROCm (cubql is unsupported on HIP)."""
-    from mujoco_warp._src import io as mwio
+    """Patch cubql -> lbvh for HIP/ROCm (cubql is unsupported on HIP).
+
+    The render context is built in ``io`` on older mujoco_warp and in
+    ``render_util`` on newer versions; both reach the same ``bvh`` module, so
+    patching that module object covers either layout.
+    """
     from mujoco_warp._src import bvh as mwbvh
+
     _orig_mesh = mwbvh.build_mesh_bvh
-    _orig_hfield = mwbvh.build_hfield_bvh
+    _orig_hfield = getattr(mwbvh, "build_hfield_bvh", None)
 
     def _patched_mesh(mjm, mid, constructor="sah", leaf_size=2):
         return _orig_mesh(mjm, mid, constructor="lbvh", leaf_size=leaf_size)
 
-    def _patched_hfield(mjm, mid, constructor="sah", leaf_size=2):
-        return _orig_hfield(mjm, mid, constructor="lbvh", leaf_size=leaf_size)
-
     mwbvh.build_mesh_bvh = _patched_mesh
-    mwbvh.build_hfield_bvh = _patched_hfield
-    mwio.bvh.build_mesh_bvh = _patched_mesh
-    mwio.bvh.build_hfield_bvh = _patched_hfield
+    if _orig_hfield is not None:
+        def _patched_hfield(mjm, mid, constructor="sah", leaf_size=2):
+            return _orig_hfield(mjm, mid, constructor="lbvh", leaf_size=leaf_size)
+        mwbvh.build_hfield_bvh = _patched_hfield
+
+    for mod_name in ("io", "render_util"):
+        try:
+            mod = importlib.import_module(f"mujoco_warp._src.{mod_name}")
+        except ImportError:
+            continue
+        if hasattr(mod, "bvh"):
+            mod.bvh.build_mesh_bvh = _patched_mesh
+            if _orig_hfield is not None:
+                mod.bvh.build_hfield_bvh = _patched_hfield
 
 
 class WarpRenderer:
@@ -99,6 +118,7 @@ class WarpRenderer:
         use_textures: bool = True,
         use_shadows: bool = True,
         use_skybox: bool = True,
+        shadow_light_fraction: float = 0.0,
     ):
         self.n_envs = n_envs
         self.img_h = img_h
@@ -113,6 +133,15 @@ class WarpRenderer:
             self.cam_active[cid] = True
 
         _patch_bvh()
+
+        # Newer mujoco_warp exposes the shadowed-pixel light fraction as a native
+        # parameter (0.0 is a true shadow, matching MuJoCo's CPU renderer). Older
+        # versions hard-code 0.3 and are fixed by render_kernel_patch instead.
+        ctx_kwargs = {}
+        if "shadow_light_fraction" in inspect.signature(
+            mjwarp.create_render_context
+        ).parameters:
+            ctx_kwargs["shadow_light_fraction"] = shadow_light_fraction
 
         with wp.ScopedDevice("cuda:0"):
             self.mw_model = mjwarp.put_model(mj_model)
@@ -131,6 +160,7 @@ class WarpRenderer:
                 use_ambient_lighting=True,
                 render_skybox=use_skybox,
                 enabled_geom_groups=list(enabled_geom_groups),
+                **ctx_kwargs,
             )
 
         rgb_adr = self.ctx.rgb_adr.numpy()
@@ -170,7 +200,8 @@ class WarpRenderer:
                 self._sync_from_jax(state_data)
 
         mjwarp.forward(mw_model, mw_data)
-        refit_scene_bvh(mw_model, mw_data, self.ctx)
+        if refit_scene_bvh is not None:
+            refit_scene_bvh(mw_model, mw_data, self.ctx)
         mjwarp.render(mw_model, mw_data, self.ctx)
 
         rgb = wp.to_torch(self.ctx.rgb_data).to(torch.int32)

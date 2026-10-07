@@ -2,6 +2,10 @@
 
 import os
 import sys
+
+# LIBERO is a checkout whose parent directory must be importable.
+sys.path.insert(0, os.environ.get("LIBERO_BASIL_PATH", "/workspace/libero_basil"))
+
 import numpy as np
 from PIL import Image, ImageDraw
 
