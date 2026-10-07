@@ -144,6 +144,7 @@ The Warp eval accepts `--brightness 1.15` (default) to correct the Warp ray trac
 libero_mjx/
   __init__.py              Package exports, auto GPU patch
   warp_gpu_patch.py        ROCm FFI, device detection, lbvh, GraphMode
+  warp_kernel_patch.py     Warp kernel-name drift fix for nested unique modules
   robosuite_patch.py       robot_base_factory fallback for non-spatial suites
   texture_patch.py         Warp type code for Texture2D arrays
   render_kernel_patch.py   Patches mujoco_warp render kernel (shadow, haze)
@@ -160,6 +161,9 @@ libero_mjx/
   render.py                WarpRenderer: batched GPU rendering with DLPack
   assets/
     xml/                   131 task XMLs extracted from robosuite
+
+examples/
+  libero_quickstart.py     Batched Warp rollout + GPU render + throughput
 
 scripts/
   train_bc.py              Train BC transformer on LIBERO demo data

@@ -17,6 +17,7 @@ Core modules:
   - render: Batched GPU rendering via mujoco_warp (WarpRenderer)
   - render_kernel_patch: Patches mujoco_warp render kernel (shadow, haze)
   - warp_gpu_patch: ROCm/CUDA compatibility patches
+  - warp_kernel_patch: Warp kernel-name drift fix for nested unique modules
   - robosuite_patch: Fixes for loading all 5 suites from robosuite
 
 Usage:
@@ -50,6 +51,13 @@ except Exception as _exc:  # noqa: BLE001
 # These patches must run before any warp/mujoco_warp import.
 from libero_mjx.warp_gpu_patch import patch_warp_to_gpu
 patch_warp_to_gpu()
+
+# Nested module="unique" kernels (mujoco_warp's CCD builders) can have their
+# hash drift between block_dim variants, leaving the compiled module's metadata
+# keyed under the old name. Make the kernel-hook lookup recover the built name.
+from libero_mjx.warp_kernel_patch import patch_stale_kernel_names
+patch_stale_kernel_names()
+
 from libero_mjx.texture_patch import patch as patch_texture  # noqa: F401
 
 from libero_mjx.envs.base import LiberoMjxEnv, LiberoState
