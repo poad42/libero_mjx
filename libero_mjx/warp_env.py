@@ -38,6 +38,9 @@ except ImportError:
     sys.path.insert(0, "/opt/venv/lib/python3.12/site-packages/mujoco/mjx/third_party")
     import mujoco_warp as mjwarp
 
+from libero_mjx.warp_multicontact_patch import patch_single_contact
+patch_single_contact()
+
 
 class WarpOscController:
     """Operational Space Controller in Torch (port of JAX OscController).
@@ -99,7 +102,9 @@ class WarpOscController:
         (wp.to_torch(wd.M).clone().squeeze(1) then GPU scatter) works
         correctly but adds ~7 ms per control step on ROCm.
         """
-        M_np = wp.to_torch(wd.M).clone().cpu().numpy().squeeze(1)
+        M_np = wp.to_torch(wd.M).clone().cpu().numpy()
+        if M_np.ndim == 3:
+            M_np = M_np.squeeze(1)
         N = M_np.shape[0]
         mat_np = np.zeros((N, self._nv, self._nv), dtype=np.float32)
         mat_np[:, self._mass_all_rows, self._mass_all_cols] = M_np
@@ -117,7 +122,8 @@ class WarpOscController:
         mass_arm: torch.Tensor,
         mass_inv: torch.Tensor,
     ) -> torch.Tensor:
-        point = wd.site_xpos[:, self.site_id]
+        point = wp.empty((wd.site_xpos.shape[0],), dtype=wp.vec3f, device=wd.site_xpos.device)
+        wp.copy(point, wd.site_xpos[:, self.site_id])
         body = self._body_wp
         mjwarp.jac(self._wm, wd, jacp_wp, jacr_wp, point, body)
 
