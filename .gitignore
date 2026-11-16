@@ -67,3 +67,7 @@ harness/runs/
 .pi/sessions/
 # Isolated Node env for Pi (installed at ~/.pi-env, but ignore any local copy)
 .pi-env/
+MIOpen/
+checkpoints/
+exp1_visibility/out/
+research/ir/data/
