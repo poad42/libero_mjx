@@ -25,6 +25,7 @@ predicates and obs construction.
 """
 from __future__ import annotations
 
+import os
 from typing import Dict, Optional, Tuple
 
 import numpy as np
@@ -39,7 +40,8 @@ except ImportError:
     import mujoco_warp as mjwarp
 
 from libero_mjx.warp_multicontact_patch import patch_single_contact
-patch_single_contact()
+if os.environ.get("LIBERO_MJX_SINGLE_CONTACT") == "1":
+    patch_single_contact()
 
 
 class WarpOscController:

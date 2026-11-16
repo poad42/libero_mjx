@@ -46,13 +46,42 @@ _INIT_DIR = epath.Path(os.environ.get(
 ))
 
 
+_BENCHMARK_NAMES = {
+    "spatial": "LIBERO_SPATIAL",
+    "object": "LIBERO_OBJECT",
+    "goal": "LIBERO_GOAL",
+    "scene10": "LIBERO_10",
+    "scene90": "LIBERO_90",
+}
+
+
+def _official_task_names(suite: str) -> list[str] | None:
+    """Task names in the official LIBERO benchmark order.
+
+    The init files are named after the BDDL task file, so the benchmark task
+    order gives the correct filename for each task index. Sorting the init
+    directory alphabetically does not match the benchmark order.
+    """
+    bench = _BENCHMARK_NAMES.get(suite)
+    if bench is None:
+        return None
+    try:
+        from libero.libero import benchmark as _benchmark
+        bm = _benchmark.get_benchmark(bench)(0)
+        return [bm.get_task(i).name for i in range(bm.n_tasks)]
+    except Exception:
+        return None
+
+
 def _load_task_names(suite: str) -> list[str]:
-    """Load task names from init files directory."""
+    """Load task names, preferring the official LIBERO benchmark order."""
+    names = _official_task_names(suite)
+    if names:
+        return names
     init_dir = _INIT_DIR / SUITES[suite]["init_dir"]
     if not init_dir.exists():
         return []
-    names = sorted([f.stem for f in init_dir.glob("*.init")])
-    return names
+    return sorted([f.stem for f in init_dir.glob("*.init")])
 
 
 # Load task names for each suite at import time
