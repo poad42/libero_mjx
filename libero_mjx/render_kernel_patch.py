@@ -41,6 +41,7 @@ except ImportError:  # loaded by path (scripts do this before sys.path is set up
 
 MARKER_SHADOW = "# PATCHED_BY_LIBERO_MJX_SHADOW"
 MARKER_HAZE = "# PATCHED_BY_LIBERO_MJX_HAZE"
+MARKER_PLANE = "# PATCHED_BY_LIBERO_MJX_PLANE"
 
 
 def _find_src() -> Path:
@@ -65,6 +66,132 @@ def _write(path: Path, text: str) -> None:
     if not bak.exists():
         bak.write_text(path.read_text())
     path.write_text(text)
+
+
+MARKER_BOUNDS = "# PATCHED_BY_LIBERO_MJX_MESH_BOUNDS"
+
+
+def _patch_mesh_bounds(src: Path) -> bool:
+    """Use 3.10's mesh bounding half-size.
+
+    3.13: half = max(|pmin|, |pmax|)
+    3.10: half = 0.5 * (pmax - pmin)
+    For an off-centre mesh these differ, and `half` feeds the geom bounds used by
+    the broadphase.
+    """
+    bvh_py = src / "bvh.py"
+    if not bvh_py.exists():
+        return False
+    s = _read(bvh_py)
+    if MARKER_BOUNDS in s:
+        return False
+    old = "  half = np.maximum(np.abs(pmin), np.abs(pmax))\n"
+    if old not in s:
+        return False
+    _write(bvh_py, s.replace(old, "  half = 0.5 * (pmax - pmin)\n", 1) + "\n" + MARKER_BOUNDS + "\n")
+    return True
+
+
+MARKER_UV = "# PATCHED_BY_LIBERO_MJX_FACE_UV"
+
+
+def _patch_incomplete_face_uv(src: Path) -> bool:
+    """Port upstream PR #1742: incomplete face UVs must not read adjacent UV data.
+
+    MuJoCo imports an omitted OBJ face corner as mesh_facetexcoord == -1 even when
+    mesh_texcoordadr >= 0. 3.13 checks only the mesh-level offset, so the sentinel
+    is added to the offset and an unrelated UV is interpolated.  Check all three
+    indices and fall back to the OBJECT_PLANE projection when any is missing.
+    """
+    render_py = src / "render.py"
+    if not render_py.exists():
+        return False
+    s = _read(render_py)
+    if MARKER_UV in s:
+        return False
+    old = """      coords = mesh_facetexcoord[face_adr]
+      uv0 = mesh_texcoord[texcoord_offset + coords[0]]
+      uv1 = mesh_texcoord[texcoord_offset + coords[1]]
+      uv2 = mesh_texcoord[texcoord_offset + coords[2]]
+      uv = uv0 * bary_u + uv1 * bary_v + uv2 * (1.0 - bary_u - bary_v)"""
+    new_body = """      coords = mesh_facetexcoord[face_adr]
+      if coords[0] >= 0 and coords[1] >= 0 and coords[2] >= 0:
+        uv0 = mesh_texcoord[texcoord_offset + coords[0]]
+        uv1 = mesh_texcoord[texcoord_offset + coords[1]]
+        uv2 = mesh_texcoord[texcoord_offset + coords[2]]
+        uv = uv0 * bary_u + uv1 * bary_v + uv2 * (1.0 - bary_u - bary_v)"""
+    if old not in s:
+        return False
+    _write(render_py, s.replace(old, new_body, 1) + "\n" + MARKER_UV + "\n")
+    return True
+
+
+MARKER_MARCH = "# PATCHED_BY_LIBERO_MJX_NO_MARCH"
+
+
+def _patch_mesh_march(src: Path) -> bool:
+    """Use 3.10's single mesh query instead of 3.13's backface-cull marching loop.
+
+    3.13 marches past culled back-facing hits to the next surface (up to 8
+    steps). On the LIBERO pedestal and cabinet meshes that produces hits where
+    3.10 reports none, which changes 10 pixels of the agentview image.
+    """
+    ray_py = src / "ray.py"
+    if not ray_py.exists():
+        return False
+    s = _read(ray_py)
+    if MARKER_MARCH in s:
+        return False
+    old = """  offset = float(0.0)
+  for _ in range(8):
+    hit = wp.mesh_query_ray(mesh_bvh, lpnt + lvec * offset, lvec, max_t - offset, t, u, v, sign, n, f)
+    if not hit:
+      return -1.0, wp.vec3(0.0, 0.0, 0.0), 0.0, 0.0, -1, -1
+    if (not cull_backfaces) or wp.dot(lvec, n) < 0.0:
+      normal = mat @ n
+      normal = wp.normalize(normal)
+      return offset + t, normal, u, v, f, mesh_geom_id
+    offset += t * (1.0 + RAY_TOL_REL) + RAY_TOL_ABS
+
+  return -1.0, wp.vec3(0.0, 0.0, 0.0), 0.0, 0.0, -1, -1"""
+    new_body = """  hit = wp.mesh_query_ray(mesh_bvh, lpnt, lvec, max_t, t, u, v, sign, n, f)
+  if not hit:
+    return -1.0, wp.vec3(0.0, 0.0, 0.0), 0.0, 0.0, -1, -1
+  if (not cull_backfaces) or wp.dot(lvec, n) < 0.0:
+    normal = mat @ n
+    normal = wp.normalize(normal)
+    return t, normal, u, v, f, mesh_geom_id
+  return -1.0, wp.vec3(0.0, 0.0, 0.0), 0.0, 0.0, -1, -1"""
+    if old not in s:
+        return False
+    _write(ray_py, s.replace(old, new_body, 1) + "\n" + MARKER_MARCH + "\n")
+    return True
+
+
+def _patch_plane_texgen(render_py: Path) -> bool:
+    """Use the pre-3.13 plane texgen so the table and stove textures match.
+
+    mujoco_warp 3.13 applies MuJoCo's OBJECT_PLANE texgen (0.5 scale, -0.5
+    offset) to plane geoms. 3.10 sampled the plane-local coordinates directly.
+    The difference shifts the wood grain on the table and the stove top, which
+    is visible to a BC policy trained on the 3.10 renderer.
+    """
+    src = _read(render_py)
+    if MARKER_PLANE in src:
+        return False
+    old = (
+        "    uv = wp.vec2(0.5 * local[0], -0.5 * local[1])\n"
+        "    offset = wp.vec2(-0.5, -0.5)\n"
+    )
+    if old not in src:
+        return False
+    new = (
+        "    uv = wp.vec2(local[0], local[1])\n"
+        "    offset = wp.vec2(0.0, 0.0)\n"
+        f"    {MARKER_PLANE}\n"
+    )
+    _write(render_py, src.replace(old, new, 1))
+    return True
 
 
 def _patch_legacy_shadow(render_py: Path) -> bool:
@@ -166,6 +293,14 @@ def patch_render_kernel() -> None:
         print(f"[render_kernel_patch] legacy patches: shadow={shadow} haze={haze}")
 
     patch_cube_textures()
+    plane = _patch_plane_texgen(src / "render.py")
+    print(f"[render_kernel_patch] plane texgen: {plane}")
+    march = _patch_mesh_march(src)
+    print(f"[render_kernel_patch] mesh march: {march}")
+    face_uv = _patch_incomplete_face_uv(src)
+    print(f"[render_kernel_patch] incomplete face UV: {face_uv}")
+    bounds = _patch_mesh_bounds(src)
+    print(f"[render_kernel_patch] mesh bounds: {bounds}")
     print("[render_kernel_patch] done")
 
 

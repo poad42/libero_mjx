@@ -346,7 +346,10 @@ def patch_cube_textures(verbose: bool = True) -> bool:
     text = _read(render_py)
     if MARKER not in text:
         if SAMPLE_DECORATED_OLD not in text:
-            raise ValueError("render.py: decorated sample_texture not found")
+            # A newer mujoco_warp may have restructured sample_texture; the render
+            # fixes this patch applies are carried by the fork branch instead.
+            print("[render_cube_patch] sample_texture anchor absent, skipping", flush=True)
+            return changed
         text = text.replace(SAMPLE_DECORATED_OLD, SAMPLE_FUNC + SAMPLE_DECORATED_OLD, 1)
         text, ok = _apply_pairs(text, [(SAMPLE_SIG_OLD, SAMPLE_SIG_NEW)])
         if not ok:

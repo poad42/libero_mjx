@@ -163,6 +163,12 @@ class WarpRenderer:
                 **ctx_kwargs,
             )
 
+        # mujoco_warp 3.13 shades meshes with interpolated vertex normals by
+        # default; 3.10 used the face normal. Match 3.10 so a policy trained
+        # against that renderer sees the same image on both builds.
+        if hasattr(self.ctx, "enable_vertex_normals"):
+            self.ctx.enable_vertex_normals = False
+
         rgb_adr = self.ctx.rgb_adr.numpy()
         self._cam_offsets = {name: int(rgb_adr[i]) for i, name in enumerate(
             sorted(self.camera_names, key=lambda n: mj_model.camera(n).id)

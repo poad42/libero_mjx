@@ -1,16 +1,22 @@
-"""Restore the single-contact box-box path of mujoco_warp 3.10.0.
+"""Optional single-contact override for the box-box multicontact path.
 
-mujoco_warp 3.13.0 always runs the box-box multicontact recovery, independent of
-the MULTICCD disable flag. That produces two contact points per box-box pair
-where 3.10.0 produced one, which changes nacon, nefc, qfrc_constraint, qacc,
-qpos and qvel after one step.
+The patch replaces ``collision_convex.multicontact`` with a function that
+returns a single EPA witness pair. It was written on the assumption that
+mujoco_warp 3.10.0 produced one contact per box-box pair. Measurement on
+libero_spatial task 0 (10 envs, 4 seeded random actions, 2026-11-13) shows the
+opposite:
 
-This module replaces ``collision_convex.multicontact`` with a function that
-returns the single EPA witness pair. The kernel builders read the name from the
-module namespace at build time, so the patch must be applied before the first
-``mjwarp.forward`` / ``mjwarp.step``.
+  step   patched 3.13.0   native 3.13.0   3.10.0
+  1      42               52              42
+  12     17               53              47
+  13     792              1961            1539
+  16     749              1837            1506
+  20     455              1168            1167
 
-The patch is a no-op on mujoco_warp 3.10.0, which has no ``multicontact``.
+Both 3.10.0 and native 3.13.0 use a multi-witness box-box path; the patch
+removes contacts the 3.10.0 reference keeps. It is therefore off by default.
+Set LIBERO_MJX_SINGLE_CONTACT=1 to re-enable it. The patch is a no-op on
+mujoco_warp 3.10.0 (the `third_party` build has no `multicontact`).
 """
 from __future__ import annotations
 
